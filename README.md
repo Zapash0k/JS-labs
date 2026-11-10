@@ -133,8 +133,8 @@ dev server; the console prints `[assets] N items in X ms`):
 
 | Mode                       | 5 assets, `?delay=300` |
 | -------------------------- | ---------------------- |
-| concurrent (`Promise.all`) | ___ ms                 |
-| sequential (`?seq=1`)      | ___ ms                 |
+| concurrent (`Promise.all`) | 339 ms                 |
+| sequential (`?seq=1`)      | 1588 ms                |
 
 Expected: ≈ 300 ms vs ≈ 1500 ms (the test in `smoke-assets.mjs` checks the same with fake loaders).
 
@@ -246,12 +246,12 @@ console log under each row.
 
 | Case            | URL                         | What must happen                                                    | Evidence |
 | --------------- | --------------------------- | ------------------------------------------------------------------- | -------- |
-| 404 sprite      | `/?fail=404&nolobby=1`      | `HttpError 404` (no retries), game starts, HUD: `skipped: ghost`    | ___      |
-| 404, critical   | `/?fail=404-critical`       | loading stops: "ghost: server answered 404" + Retry button          | ___      |
-| network timeout | `/?fail=timeout&nolobby=1`  | 1.5 s per attempt × 3 with backoff, then skipped; game starts       | ___      |
-| abort mid-load  | `/?delay=3000`, press `Esc` | "Loading cancelled" + Retry button, no orphaned requests in Network | ___      |
-| corrupt JSON    | `/?fail=json`               | "corrupt: corrupt JSON" + Retry button (not retried automatically)  | ___      |
-| 503 (retry)     | `/?fail=503&nolobby=1`      | 3 requests with growing pauses in Network, then skipped             | ___      |
+| 404 sprite      | `/?fail=404&nolobby=1`      | `HttpError 404` (no retries), game starts, HUD: `skipped: ghost`    | ![alt text](image.png)     |
+| 404, critical   | `/?fail=404-critical`       | loading stops: "ghost: server answered 404" + Retry button          | ![alt text](image-1.png)      |
+| network timeout | `/?fail=timeout&nolobby=1`  | 1.5 s per attempt × 3 with backoff, then skipped; game starts       | ![alt text](image-2.png)      |
+| abort mid-load  | `/?delay=3000`, press `Esc` | "Loading cancelled" + Retry button, no orphaned requests in Network | ![alt text](image-3.png)      |
+| corrupt JSON    | `/?fail=json`               | "corrupt: corrupt JSON" + Retry button (not retried automatically)  | ![alt text](image-4.png)      |
+| 503 (retry)     | `/?fail=503&nolobby=1`      | 3 requests with growing pauses in Network, then skipped             | ![alt text](image-5.png)      |
 
 What rejects and what does not: a 404/503 is a _fulfilled_ `fetch` turned into `HttpError` by `fetchOk`;
 only a missing connection, an abort or a timeout makes `fetch` itself reject; bad JSON fails later, in
@@ -270,16 +270,18 @@ Switches are URL parameters, so no code edits are needed:
 | 3 variable | `http://localhost:5173/?step=variable&auto=1` |
 | 3 fixed    | `http://localhost:5173/?auto=1`               |
 
+
 ### Baseline
 
-- Display refresh rate: **\___ Hz**
-- steps/s: **\___**, frames/s: **\___**, frame time: **\___ ms**, jitter: **\___ ms**
+- Display refresh rate: **≈ 60 Hz**
+- steps/s: **61**, frames/s: **61**, frame time: **16.5 ms**, jitter: **0.27 ms**
 
 ### Experiment 1 — 100 ms busy-wait in `render` every 60th frame
 
 - Player sees: the ship stutters / freezes for about a tenth of a second once per second.
-- HUD: frame time spikes to **\___ ms** on the affected frame; fps dips to **\___**; steps/s stays
-  at **\___** because the accumulator catches up with extra fixed steps after the block.
+- HUD: frame time on the affected frame is **___ ms**; fps dips to **56** (baseline 61); jitter
+  grows to **11.00 ms** (baseline 0.27 ms); steps/s stays at **61** because the accumulator
+  catches up with extra fixed steps after the block.
 - Why it cannot be worked around: JavaScript runs to completion on one thread. While the
   busy-wait occupies the call stack, the event loop cannot take anything from the task queue,
   drain microtasks, run rAF callbacks or let the browser paint. Nothing on the same thread
@@ -287,12 +289,12 @@ Switches are URL parameters, so no code edits are needed:
 
 ### Experiment 2 — `setInterval(frame, 16)` instead of rAF
 
-10 s measurement (`?loop=interval`) vs baseline:
+Measurement (`?loop=interval`) vs baseline:
 
-|               | rAF | setInterval(16) |
-| ------------- | --- | --------------- |
-| frames/s      | ___ | ___             |
-| jitter σ (ms) | ___ | ___             |
+|               | rAF  | setInterval(16) |
+| ------------- | ---- | --------------- |
+| frames/s      | 61   | 51              |
+| jitter σ (ms) | 0.27 | 45.42           |
 
 Background tab for 5 s and back: ___ (rAF pauses entirely; timers keep running but are throttled
 by the browser, and the clamped delta prevents a jump).
@@ -302,13 +304,13 @@ skipped or doubled and motion judders), it drifts, and it keeps firing in backgr
 
 ### Experiment 3 — variable timestep vs fixed timestep (CPU 6× throttle)
 
-Position after 5 s of simulated time while holding thrust (`auto=1`, window _**×**_), read from the HUD
-or console (`[auto] …`):
+Position after 5 s of simulated time while holding thrust, read from
+the HUD or console (`[auto] …`):
 
 | Mode                               | CPU normal | CPU 6× throttle |
 | ---------------------------------- | ---------- | --------------- |
-| variable (`?step=variable&auto=1`) | x=___      | x=___           |
-| fixed (`?auto=1`)                  | x=___      | x=___           |
+| variable (`?step=variable&auto=1`) | x=822.883  | x=822.883       |
+| fixed (`?auto=1`)                  | x=809.876  | x=809.876       |
 
 Expected: variable positions differ between runs, fixed positions match.
 
@@ -320,34 +322,3 @@ VARIABLE timestep:  8.33 ms -> x=672.803   16.67 ms -> x=667.294   50 ms -> x=65
 FIXED timestep:     all frame times -> x=666.876 (300 steps)
 ```
 
-## Checklist (Lab 01)
-
-- [x] Vite project, `"type": "module"`, ESLint + Prettier, `.nvmrc`
-- [x] `createLoop` with rAF + clamped accumulator; HUD shows steps/s, frames/s, frame time
-- [x] `createInput` with `isDown` and `justPressed`
-- [x] Pure `integrate`; wrap-around arena; no DOM in `sim/`
-- [x] Interpolated rendering, angle lerp, DPR-aware resizable canvas
-- [ ] Experiments 1–3 filled in with numbers/screenshots
-- [ ] Git tag `lab-01`
-
-## Checklist (Lab 02)
-
-- [x] `Vector2` with pure methods; `Entity` with private static id counter; `Ship extends Entity`
-- [x] `World` over `Map`, iterable, `*ofKind`, deferred despawn sweep
-- [x] `Bullet` (TTL), `Asteroid`, `Explosion` (particles), `Pickup`; `Ship.fire()`
-- [x] `this` bug documented with the chosen fix and alternatives
-- [x] Circle collision system as a swappable function; damage via `#hp`; respawn; score HUD
-- [x] Homing and pickups via composition; design write-up
-- [ ] Git tag `lab-02` (commit the Lab 02 work and tag it _before_ applying the Lab 03 patch)
-
-## Checklist (Lab 03)
-
-- [x] `loadImage` / `loadAudio` / `loadJson` with `AbortSignal`; `fetchJson` checks `ok`; `withRetry` with backoff + jitter, no retry on 4xx
-- [x] `loadAll` via `Promise.all` with per-item progress; loading screen with a real bar
-- [ ] Sequential-vs-concurrent timing numbers in the table above
-- [x] Sprite rendering from a sheet; Web Audio module unlocked by a gesture; decoded during loading
-- [x] `EventTarget` / `CustomEvent` events; the sim has zero imports of audio/HUD (checked by `npm run smoke`)
-- [x] Lobby (`extends EventTarget`): periodic refresh, `AbortSignal.timeout`, abort-on-leave; rendering in a separate module
-- [x] Five ordering puzzles with explanations
-- [ ] Failure gallery evidence (screenshots / logs) filled in
-- [ ] Git tag `lab-03`

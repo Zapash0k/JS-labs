@@ -1,0 +1,20 @@
+{
+  "assets": [
+    { "key": "sprites", "type": "image", "url": "/assets/sprites.png", "critical": true },
+    { "key": "arena", "type": "json", "url": "/assets/arena.json", "critical": true },
+    { "key": "shoot", "type": "audio", "url": "/assets/sfx/shoot.wav" },
+    { "key": "hit", "type": "audio", "url": "/assets/sfx/hit.wav" },
+    { "key": "explosion", "type": "audio", "url": "/assets/sfx/explosion.wav" }
+  ],
+  "frames": {
+    "ship": [0, 0, 32, 32],
+    "shipThrust": [32, 0, 32, 32],
+    "bullet": [64, 0, 8, 8],
+    "bulletHoming": [72, 0, 8, 8],
+    "pickupShield": [0, 32, 24, 24],
+    "pickupRapid": [24, 32, 24, 24],
+    "pickupHoming": [48, 32, 24, 24],
+    "asteroid": [96, 0, 64, 64],
+    "asteroidHunter": [160, 0, 64, 64]
+  }
+}

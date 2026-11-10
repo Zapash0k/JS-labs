@@ -21,8 +21,8 @@ export function makeStars(count, w, h) {
   }));
 }
 
-export function drawBackground(ctx, w, h, stars) {
-  ctx.fillStyle = "#05060a";
+export function drawBackground(ctx, w, h, stars, background = "#05060a") {
+  ctx.fillStyle = background;
   ctx.fillRect(0, 0, w, h);
 
   ctx.strokeStyle = "rgba(80, 110, 160, 0.12)";
@@ -46,6 +46,45 @@ export function drawBackground(ctx, w, h, stars) {
   }
 }
 
+function drawShield(ctx, x, y) {
+  ctx.strokeStyle = "rgba(106, 255, 200, 0.8)";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(x, y, 22, 0, Math.PI * 2);
+  ctx.stroke();
+}
+
+// Sprite versions (Lab 03). Each returns false when the frame is missing, so the caller can
+// fall back to the vector drawing and the game stays playable without the sheet.
+function spriteFor(ctx, sprites, e, d) {
+  switch (e.kind) {
+    case "ship":
+      if (e.invuln > 0 && Math.floor(e.invuln * 10) % 2 === 0) return true; // blink
+      if (!sprites.draw(ctx, e.thrust ? "shipThrust" : "ship", d.x, d.y, d.angle)) return false;
+      if (e.shield > 0) drawShield(ctx, d.x, d.y);
+      return true;
+    case "bullet":
+      return sprites.draw(ctx, e.behaviors.length ? "bulletHoming" : "bullet", d.x, d.y, d.angle);
+    case "asteroid": {
+      const hunter = e.behaviors.some((b) => b.name === "homing");
+      return sprites.draw(
+        ctx,
+        hunter ? "asteroidHunter" : "asteroid",
+        d.x,
+        d.y,
+        d.angle,
+        e.radius * 2.3,
+      );
+    }
+    case "pickup": {
+      const name = `pickup${e.effect[0].toUpperCase()}${e.effect.slice(1)}`;
+      return sprites.draw(ctx, name, d.x, d.y, 0);
+    }
+    default:
+      return false;
+  }
+}
+
 // The ship is drawn at the origin pointing right (+x); the canvas is moved/rotated.
 export function drawShip(ctx, { x, y, angle, thrust, shield = false, blink = false }) {
   if (blink) return;
@@ -53,13 +92,7 @@ export function drawShip(ctx, { x, y, angle, thrust, shield = false, blink = fal
   ctx.translate(x, y);
   ctx.rotate(angle);
 
-  if (shield) {
-    ctx.strokeStyle = "rgba(106, 255, 200, 0.8)";
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.arc(0, 0, 22, 0, Math.PI * 2);
-    ctx.stroke();
-  }
+  if (shield) drawShield(ctx, 0, 0);
 
   if (thrust) {
     ctx.fillStyle = "#ff9d2e";
@@ -145,7 +178,7 @@ function drawExplosion(ctx, e, duration) {
   for (const p of e.particles) ctx.fillRect(p.pos.x - 1.5, p.pos.y - 1.5, 3, 3);
 }
 
-export function drawWorld(ctx, world, alpha, size) {
+export function drawWorld(ctx, world, alpha, size, sprites = null) {
   for (const e of world) {
     if (!e.alive) continue;
     if (e.kind === "explosion") {
@@ -153,6 +186,7 @@ export function drawWorld(ctx, world, alpha, size) {
       continue;
     }
     const d = drawState(e, alpha, size);
+    if (sprites && spriteFor(ctx, sprites, e, d)) continue;
     if (e.kind === "ship") {
       drawShip(ctx, {
         ...d,

@@ -1,0 +1,23 @@
+[
+  {
+    "id": "open-space",
+    "name": "Open space",
+    "players": 2,
+    "maxPlayers": 8,
+    "arena": { "asteroids": 6, "pickups": true, "stars": 140 }
+  },
+  {
+    "id": "rock-field",
+    "name": "Rock field",
+    "players": 5,
+    "maxPlayers": 8,
+    "arena": { "asteroids": 12, "pickups": true, "stars": 90, "background": "#0b0710" }
+  },
+  {
+    "id": "quiet-corner",
+    "name": "Quiet corner",
+    "players": 0,
+    "maxPlayers": 4,
+    "arena": { "asteroids": 2, "pickups": false, "stars": 200, "background": "#04080c" }
+  }
+]

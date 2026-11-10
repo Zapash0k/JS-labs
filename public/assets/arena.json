@@ -1,0 +1,7 @@
+{
+  "name": "Open space",
+  "background": "#05060a",
+  "stars": 140,
+  "asteroids": 6,
+  "pickups": true
+}

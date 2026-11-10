@@ -10,7 +10,7 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "determinism": "node scripts/determinism.mjs",
-    "smoke": "node scripts/smoke.mjs"
+    "smoke": "node scripts/smoke.mjs && node scripts/smoke-assets.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

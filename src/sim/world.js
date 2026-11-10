@@ -8,7 +8,7 @@ import { contain } from "./arena.js";
 import { findCollisions } from "./collision.js";
 
 const RESPAWN_DELAY = 2; // s
-const ASTEROID_TARGET = 6;
+const DEFAULT_ASTEROIDS = 6;
 const SAFE_DISTANCE = 160;
 
 // Collision rules keyed by the two kinds in alphabetical order; handlers get (first, second).
@@ -16,15 +16,19 @@ const RULES = {
   "asteroid|bullet"(world, asteroid, bullet) {
     bullet.alive = false;
     asteroid.takeDamage(bullet.damage);
-    if (!asteroid.alive) world.score += 100;
+    world.emit("hit", { target: asteroid, pos: asteroid.pos });
+    if (!asteroid.alive) world.addScore(100, asteroid.pos);
   },
   "asteroid|ship"(world, asteroid, ship) {
-    if (ship.takeDamage(25)) asteroid.takeDamage(30);
+    if (ship.takeDamage(25)) {
+      asteroid.takeDamage(30);
+      world.emit("hit", { target: ship, pos: ship.pos });
+    }
   },
   "bullet|ship"(world, bullet, ship) {
     if (bullet.owner === ship) return;
     bullet.alive = false;
-    ship.takeDamage(bullet.damage);
+    if (ship.takeDamage(bullet.damage)) world.emit("hit", { target: ship, pos: ship.pos });
   },
   "pickup|ship"(world, pickup, ship) {
     pickup.alive = false;
@@ -40,9 +44,17 @@ export class World {
   #asteroidIn = 0;
   #pickupIn = 8;
 
-  constructor(size, { hazards = true, rng = Math.random } = {}) {
+  constructor(
+    size,
+    { hazards = true, rng = Math.random, asteroidTarget = DEFAULT_ASTEROIDS, pickups = true } = {},
+  ) {
     this.size = size; // { w, h }, read live so window resizes work
     this.hazards = hazards;
+    this.asteroidTarget = asteroidTarget;
+    this.pickups = pickups;
+    // Lab 03: the sim reports what happened ("fired", "hit", "exploded", "scoreChanged");
+    // audio.js and hud.js subscribe. The sim imports neither.
+    this.events = new EventTarget();
     this.rng = rng;
     this.score = 0;
     this.player = null;
@@ -51,7 +63,7 @@ export class World {
 
   start() {
     this.player = this.spawn(new Ship(this.size.w / 2, this.size.h / 2));
-    if (this.hazards) for (let i = 0; i < ASTEROID_TARGET - 1; i++) this.#spawnAsteroid();
+    if (this.hazards) for (let i = 0; i < this.asteroidTarget - 1; i++) this.#spawnAsteroid();
   }
 
   spawn(entity) {
@@ -84,7 +96,17 @@ export class World {
     for (const e of this) if (e.alive && e.kind === kind) yield e;
   }
 
+  emit(type, detail) {
+    this.events.dispatchEvent(new CustomEvent(type, { detail }));
+  }
+
+  addScore(delta, pos) {
+    this.score += delta;
+    this.emit("scoreChanged", { delta, total: this.score, pos });
+  }
+
   spawnExplosion(pos) {
+    this.emit("exploded", { pos });
     return this.spawn(new Explosion(pos.x, pos.y, this.rng));
   }
 
@@ -155,14 +177,14 @@ export class World {
       if (e.kind === "asteroid") asteroids++;
       else if (e.kind === "pickup") pickups++;
     }
-    if (asteroids < ASTEROID_TARGET && this.#asteroidIn <= 0) {
+    if (asteroids < this.asteroidTarget && this.#asteroidIn <= 0) {
       this.#spawnAsteroid();
       this.#asteroidIn = 1;
     }
     this.#pickupIn -= dt;
     if (this.#pickupIn <= 0) {
       this.#pickupIn = 10;
-      if (pickups < 2) {
+      if (this.pickups && pickups < 2) {
         const names = Object.keys(EFFECTS);
         const effect = names[Math.floor(this.rng() * names.length)];
         this.spawn(new Pickup(this.rng() * this.size.w, this.rng() * this.size.h, effect));

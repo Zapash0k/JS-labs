@@ -75,6 +75,7 @@ export class Ship extends Entity {
     const bullet = new Bullet(nose.x, nose.y, this.vel.add(dir.scale(BULLET_SPEED)), this);
     bullet.angle = this.angle;
     if (this.homingAmmo > 0) bullet.behaviors.push(homing({ seek: "asteroid", turnRate: 4 }));
+    this.world.emit("fired", { owner: this, pos: nose });
     return this.world.spawn(bullet);
   }
 

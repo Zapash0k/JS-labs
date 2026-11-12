@@ -12,6 +12,8 @@ import { createHud } from "./hud.js";
 import { Lobby } from "./lobby/lobby.js";
 import { mountLobbyView } from "./lobby/lobbyView.js";
 import { once } from "./events.js";
+import { Connection, wsUrl } from "./net/connection.js";
+import { mountChat } from "./chatView.js";
 
 // Experiment switches, set through the URL:
 // Lab 01:
@@ -26,7 +28,9 @@ import { once } from "./events.js";
 //   ?fail=MODE        failure gallery: 404 | 404-critical | timeout | 503 | json (see assets/failures.js)
 //   ?delay=MS         every /assets request is delayed by MS (dev server), to see the progress bar
 //   ?seq=1            load assets one after another instead of concurrently (README timing)
-//   ?nolobby=1        skip the lobby and start the default arena
+//   ?nolobby=1        skip the lobby and start the default arena (offline, no server needed)
+// Lab 04: without ?nolobby / ?auto the lobby talks to the Node server (npm run dev:server) over
+//   /api/rooms and a WebSocket on /ws; two windows in one room see each other's names and chat.
 const params = new URLSearchParams(location.search);
 const busy = params.has("busy");
 const mode = params.get("loop") === "interval" ? "interval" : "raf";
@@ -60,6 +64,7 @@ let game = null;
 let idleStars = makeStars(140, size.w, size.h);
 let assetInfo = "assets: loading";
 let autoResult = null;
+let net = null; // Connection to the server once joined
 let frameCounter = 0;
 
 const loop = createLoop({
@@ -105,6 +110,7 @@ const loop = createLoop({
       `shield ${p.shield.toFixed(1)}  rapid ${p.rapid.toFixed(1)}  homing ${p.homingAmmo.toFixed(1)}`,
       `entities: ${world.count}`,
       assetInfo,
+      `net: ${net ? (net.connected ? "connected" : "reconnecting...") : "offline"}`,
       `sound: ${audio ? (audio.unlocked ? "on" : "click to enable") : "unavailable"}`,
       ...(auto ? [`auto @5s: ${autoResult ?? "running..."}`] : []),
     ]);
@@ -227,9 +233,35 @@ if (auto || params.has("nolobby")) {
 } else {
   const lobby = new Lobby();
   const view = mountLobbyView(document.getElementById("lobby"), lobby);
-  lobby.addEventListener("joined", (e) => {
-    view.destroy();
-    startGame(e.detail);
-  });
+  lobby.addEventListener("joined", (e) => joinRoom(lobby, view, e.detail));
   lobby.enter();
+}
+
+// The player picked a room: open the socket, send `join`, start the game when the server confirms.
+function joinRoom(lobby, view, { room, name }) {
+  view.setStatus(`Joining ${room.name}...`);
+  const conn = new Connection({
+    url: wsUrl(),
+    hello: () => ({ type: "join", room: room.id, name }),
+  });
+  let joined = false;
+
+  conn.on("joined", () => {
+    joined = true;
+    net = conn;
+    view.destroy();
+    mountChat(document.getElementById("chat"), conn);
+    startGame({ room, name });
+  });
+  conn.addEventListener("close", (e) => {
+    if (joined) return; // in-game: the chat view reports it and the wrapper reconnects
+    // Refused (room full, bad name...) or the server is down: back to the lobby.
+    view.setStatus(
+      `Cannot join: ${e.detail.reason || `connection closed (${e.detail.code})`}`,
+      true,
+    );
+    conn.close();
+    lobby.enter();
+  });
+  conn.open();
 }

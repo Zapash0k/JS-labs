@@ -104,6 +104,17 @@ export async function loadAudio(ctx, url, { signal } = {}) {
   }
 }
 
+export async function postJson(url, body, { signal } = {}) {
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    signal,
+  });
+  if (!res.ok) throw new HttpError(res.status, url);
+  return res.json();
+}
+
 export const loadJson = fetchJson;
 
 // ---------- retry ----------

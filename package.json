@@ -3,20 +3,28 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
+  "workspaces": [
+    "client",
+    "server"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
-    "dev": "vite",
-    "build": "vite build",
-    "preview": "vite preview",
+    "dev": "node scripts/dev.mjs",
+    "dev:client": "npm run dev -w client",
+    "dev:server": "npm run dev -w server",
+    "build": "npm run build -w client",
+    "start": "npm start -w server",
+    "test": "npm test -w server",
+    "smoke": "npm run smoke -w client",
     "lint": "eslint .",
-    "format": "prettier --write .",
-    "determinism": "node scripts/determinism.mjs",
-    "smoke": "node scripts/smoke.mjs && node scripts/smoke-assets.mjs"
+    "format": "prettier --write ."
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "eslint": "^10.14.0",
     "globals": "^17.14.0",
-    "prettier": "^3.9.10",
-    "vite": "^8.3.5"
+    "prettier": "^3.9.10"
   }
 }

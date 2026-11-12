@@ -2,7 +2,8 @@
 //   /assets/...?delay=MS  delays the response by MS milliseconds (slow network, timeouts, progress)
 //   /__test/corrupt.json  200 OK with truncated JSON (JSON.parse fails on the client)
 //   /__test/503           always 503 (exercises retry with backoff)
-//   /assets/*, /api/*     a missing file is a real 404 (Vite would answer 200 with index.html)
+//   /assets/*             a missing file is a real 404 (Vite would answer 200 with index.html)
+// Lab 04: /api and /ws are proxied to the Node server (npm run dev:server, default port 3000).
 import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { defineConfig } from "vite";
@@ -23,7 +24,7 @@ const labMiddleware = (root) => (req, res, next) => {
     return;
   }
 
-  const isData = url.pathname.startsWith("/assets/") || url.pathname.startsWith("/api/");
+  const isData = url.pathname.startsWith("/assets/");
   if (isData && !isFile(join(root, decodeURIComponent(url.pathname)))) {
     res.statusCode = 404;
     res.end("not found");
@@ -40,7 +41,16 @@ const labMiddleware = (root) => (req, res, next) => {
   next();
 };
 
+const API = process.env.API_ORIGIN ?? "http://127.0.0.1:3000";
+
 export default defineConfig({
+  server: {
+    proxy: {
+      "/api": API,
+      "/health": API,
+      "/ws": { target: API.replace(/^http/, "ws"), ws: true },
+    },
+  },
   plugins: [
     {
       name: "dogfight-lab-middleware",

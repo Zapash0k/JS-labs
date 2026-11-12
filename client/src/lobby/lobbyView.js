@@ -1,4 +1,6 @@
 // Lobby rendering (Lab 03, M3): DOM only, driven by the Lobby's events.
+import { HttpError } from "../assets/loader.js";
+
 export function mountLobbyView(root, lobby) {
   const ui = new AbortController(); // one abort removes every listener below
   const { signal } = ui;
@@ -12,7 +14,15 @@ export function mountLobbyView(root, lobby) {
     textContent: "Loading rooms…",
   });
   const list = document.createElement("ul");
-  root.replaceChildren(title, label, status, list);
+  const newName = Object.assign(document.createElement("input"), {
+    placeholder: "new room name",
+    maxLength: 32,
+  });
+  const create = Object.assign(document.createElement("button"), { textContent: "Create room" });
+  const form = document.createElement("div");
+  form.className = "create";
+  form.append(newName, create);
+  root.replaceChildren(title, label, status, list, form);
   root.hidden = false;
 
   function renderRooms(rooms) {
@@ -53,7 +63,34 @@ export function mountLobbyView(root, lobby) {
     { signal },
   );
 
+  const setStatus = (text, isError = false) => {
+    status.className = isError ? "status error" : "status";
+    status.textContent = text;
+  };
+
+  create.addEventListener(
+    "click",
+    async () => {
+      const wanted = newName.value.trim();
+      if (!wanted) return;
+      try {
+        await lobby.createRoom(wanted);
+        newName.value = "";
+      } catch (err) {
+        const reason =
+          err instanceof HttpError && err.status === 409
+            ? "that name is taken"
+            : err instanceof HttpError && err.status === 422
+              ? "invalid room name"
+              : err.message;
+        setStatus(`Cannot create the room: ${reason}`, true);
+      }
+    },
+    { signal },
+  );
+
   return {
+    setStatus,
     destroy() {
       ui.abort();
       root.hidden = true;

@@ -1,7 +1,7 @@
 // Lobby data layer (Lab 03, M3). No DOM here: it fetches rooms and dispatches events;
 // lobbyView.js renders. Events: "roomsChanged" (detail: rooms), "failed" (detail: Error),
 // "joined" (detail: { room, name }).
-import { fetchJson, withRetry } from "../assets/loader.js";
+import { fetchJson, postJson, withRetry } from "../assets/loader.js";
 
 export class Lobby extends EventTarget {
   #opts;
@@ -10,7 +10,7 @@ export class Lobby extends EventTarget {
   #inflight = false;
 
   constructor({
-    url = "/api/rooms.json",
+    url = "/api/rooms",
     intervalMs = 3000,
     timeoutMs = 4000,
     attempts = 2,
@@ -61,6 +61,13 @@ export class Lobby extends EventTarget {
     } finally {
       this.#inflight = false;
     }
+  }
+
+  /** POST /api/rooms, then refresh the list. Rejects with HttpError (409 name taken, 422 invalid name). */
+  async createRoom(name) {
+    const room = await postJson(this.#opts.url, { name }, { signal: this.#life?.signal });
+    await this.refresh();
+    return room;
   }
 
   join(roomId, name) {

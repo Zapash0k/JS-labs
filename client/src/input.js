@@ -7,12 +7,18 @@ export function createInput(target = window) {
   const down = new Set();
   const pressed = new Set();
 
+  // Typing in the chat/lobby text fields must not steer the ship.
+  const typing = (e) =>
+    e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement;
+
   target.addEventListener("keydown", (e) => {
+    if (typing(e)) return;
     if (e.code.startsWith("Arrow") || e.code === "Space") e.preventDefault();
     if (!down.has(e.code)) pressed.add(e.code);
     down.add(e.code);
   });
   target.addEventListener("keyup", (e) => {
+    if (typing(e)) return;
     down.delete(e.code);
   });
   target.addEventListener("blur", () => {

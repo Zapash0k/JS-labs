@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "workspaces": [
+    "shared",
     "client",
     "server"
   ],
@@ -16,7 +17,7 @@
     "dev:server": "npm run dev -w server",
     "build": "npm run build -w client",
     "start": "npm start -w server",
-    "test": "npm test -w server",
+    "test": "npm test -w shared && npm test -w server",
     "smoke": "npm run smoke -w client",
     "lint": "eslint .",
     "format": "prettier --write ."

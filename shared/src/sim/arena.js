@@ -1,9 +1,13 @@
 import { Vector2 } from "./vector.js";
 
+// Values already inside [0, max) are returned untouched: ((v % max) + max) % max re-rounds them,
+// which makes the result depend on how many times it is applied (and breaks exact prediction).
+export const wrapCoord = (v, max) => (v >= 0 && v < max ? v : ((v % max) + max) % max);
+
 // Wrap-around arena. Returns true if the entity crossed an edge this call.
 export function wrap(e, width, height) {
-  const x = ((e.pos.x % width) + width) % width;
-  const y = ((e.pos.y % height) + height) % height;
+  const x = wrapCoord(e.pos.x, width);
+  const y = wrapCoord(e.pos.y, height);
   const wrapped = x !== e.pos.x || y !== e.pos.y;
   if (wrapped) e.pos = new Vector2(x, y);
   return wrapped;

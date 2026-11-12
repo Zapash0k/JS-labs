@@ -6,6 +6,7 @@ import { Explosion } from "./explosion.js";
 import { homing } from "./behaviors.js";
 import { contain } from "./arena.js";
 import { findCollisions } from "./collision.js";
+import { mulberry32 } from "../prng.js";
 
 const RESPAWN_DELAY = 2; // s
 const DEFAULT_ASTEROIDS = 6;
@@ -28,7 +29,11 @@ const RULES = {
   "bullet|ship"(world, bullet, ship) {
     if (bullet.owner === ship) return;
     bullet.alive = false;
-    if (ship.takeDamage(bullet.damage)) world.emit("hit", { target: ship, pos: ship.pos });
+    if (ship.takeDamage(bullet.damage)) {
+      world.emit("hit", { target: ship, pos: ship.pos });
+      if (!ship.alive && bullet.owner?.playerId != null)
+        world.addScore(100, ship.pos, bullet.owner.playerId);
+    }
   },
   "pickup|ship"(world, pickup, ship) {
     pickup.alive = false;
@@ -40,13 +45,18 @@ export class World {
   #entities = new Map();
   #pending = [];
   #stepping = false;
-  #respawnIn = null;
+  #nextId = 1; // ids are assigned by the world, so server and client agree on them
   #asteroidIn = 0;
   #pickupIn = 8;
 
   constructor(
     size,
-    { hazards = true, rng = Math.random, asteroidTarget = DEFAULT_ASTEROIDS, pickups = true } = {},
+    {
+      hazards = true,
+      rng = mulberry32(1),
+      asteroidTarget = DEFAULT_ASTEROIDS,
+      pickups = true,
+    } = {},
   ) {
     this.size = size; // { w, h }, read live so window resizes work
     this.hazards = hazards;
@@ -57,16 +67,59 @@ export class World {
     this.events = new EventTarget();
     this.rng = rng;
     this.score = 0;
-    this.player = null;
+    this.player = null; // the local (keyboard) player's ship, single-player only
     this.respawnIn = null; // for the HUD
+    // playerId -> { ship, respawnIn, remote, slot, score }
+    this.players = new Map();
   }
 
+  /** Single-player: one keyboard-driven ship in the middle, plus hazards. */
   start() {
-    this.player = this.spawn(new Ship(this.size.w / 2, this.size.h / 2));
-    if (this.hazards) for (let i = 0; i < this.asteroidTarget - 1; i++) this.#spawnAsteroid();
+    this.addPlayer("local");
+    this.startHazards(this.asteroidTarget - 1);
+  }
+
+  startHazards(count = this.asteroidTarget) {
+    if (this.hazards) for (let i = 0; i < count; i++) this.#spawnAsteroid();
+  }
+
+  /** Adds a ship for `playerId`. Remote ships are driven by setCommand(), local ones by the keyboard. */
+  addPlayer(playerId, { remote = false, slot = null, at = null } = {}) {
+    const rec = { ship: null, respawnIn: null, remote, slot, score: 0 };
+    this.players.set(playerId, rec);
+    const spot = at ?? (remote ? this.#safeSpot() : { x: this.size.w / 2, y: this.size.h / 2 });
+    this.#spawnShip(playerId, rec, spot);
+    return rec.ship;
+  }
+
+  removePlayer(playerId) {
+    const rec = this.players.get(playerId);
+    if (!rec) return;
+    this.players.delete(playerId);
+    if (rec.ship.alive) {
+      rec.ship.alive = false;
+      rec.ship.onDeath = () => {}; // leaving is not an explosion
+    }
+    if (this.player === rec.ship) this.player = null;
+  }
+
+  /** The command the ship will use for the next step; null means "no input arrived: do not advance". */
+  setCommand(playerId, cmd) {
+    const rec = this.players.get(playerId);
+    if (rec) rec.ship.controls = cmd;
+  }
+
+  #spawnShip(playerId, rec, spot) {
+    const ship = new Ship(spot.x, spot.y);
+    ship.remote = rec.remote;
+    ship.playerId = playerId;
+    ship.slot = rec.slot;
+    rec.ship = this.spawn(ship);
+    if (!rec.remote) this.player = rec.ship;
   }
 
   spawn(entity) {
+    entity.id = this.#nextId++;
     entity.world = this;
     // During step() new entities wait in a queue so the Map is not mutated mid-iteration.
     if (this.#stepping) this.#pending.push(entity);
@@ -100,9 +153,11 @@ export class World {
     this.events.dispatchEvent(new CustomEvent(type, { detail }));
   }
 
-  addScore(delta, pos) {
+  addScore(delta, pos, playerId = "local") {
     this.score += delta;
-    this.emit("scoreChanged", { delta, total: this.score, pos });
+    const rec = this.players.get(playerId);
+    if (rec) rec.score += delta;
+    this.emit("scoreChanged", { delta, total: this.score, pos, playerId });
   }
 
   spawnExplosion(pos) {
@@ -140,25 +195,29 @@ export class World {
   }
 
   #respawn(dt) {
-    if (!this.player || this.player.alive) {
-      this.respawnIn = this.#respawnIn = null;
-      return;
+    for (const [playerId, rec] of this.players) {
+      if (rec.ship.alive) {
+        rec.respawnIn = null;
+        if (!rec.remote) this.respawnIn = null;
+        continue;
+      }
+      rec.respawnIn ??= RESPAWN_DELAY;
+      rec.respawnIn -= dt;
+      if (!rec.remote) this.respawnIn = Math.max(0, rec.respawnIn);
+      if (rec.respawnIn > 0) continue;
+      this.#spawnShip(playerId, rec, this.#safeSpot());
+      rec.respawnIn = null;
     }
-    this.#respawnIn ??= RESPAWN_DELAY;
-    this.#respawnIn -= dt;
-    this.respawnIn = Math.max(0, this.#respawnIn);
-    if (this.#respawnIn > 0) return;
-    const spot = this.#safeSpot();
-    this.player = this.spawn(new Ship(spot.x, spot.y));
   }
 
+  // The spot farthest from asteroids and other living ships (up to 30 random tries).
   #safeSpot() {
-    const asteroids = [...this.ofKind("asteroid")];
-    let best = null;
+    const obstacles = [...this.ofKind("asteroid"), ...this.ofKind("ship")];
+    let best = { x: this.size.w / 2, y: this.size.h / 2 };
     let bestD = -1;
     for (let i = 0; i < 30; i++) {
       const p = new Vector2(this.rng() * this.size.w, this.rng() * this.size.h);
-      const d = Math.min(Infinity, ...asteroids.map((a) => a.pos.sub(p).length()));
+      const d = Math.min(Infinity, ...obstacles.map((a) => a.pos.sub(p).length()));
       if (d > bestD) {
         best = p;
         bestD = d;
@@ -201,7 +260,8 @@ export class World {
         this.rng() < 0.5
           ? [this.rng() * w, this.rng() < 0.5 ? 0 : h]
           : [this.rng() < 0.5 ? 0 : w, this.rng() * h];
-      if (!this.player || this.player.pos.sub(new Vector2(x, y)).length() > 250) break;
+      const ships = [...this.ofKind("ship")];
+      if (ships.every((sh) => sh.pos.sub(new Vector2(x, y)).length() > 250)) break;
     }
     const vel = Vector2.fromAngle(this.rng() * Math.PI * 2, 40 + this.rng() * 70);
     const a = new Asteroid(x, y, vel, this.rng);

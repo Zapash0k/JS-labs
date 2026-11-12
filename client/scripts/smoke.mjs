@@ -1,13 +1,13 @@
 // Headless checks for the Lab 02 sim (no DOM). Run: npm run smoke
 import assert from "node:assert/strict";
-import { Vector2 } from "../src/sim/vector.js";
-import { Entity } from "../src/sim/entity.js";
-import { Ship } from "../src/sim/ship.js";
-import { Bullet } from "../src/sim/bullet.js";
-import { Asteroid } from "../src/sim/asteroid.js";
-import { Pickup } from "../src/sim/pickup.js";
-import { World } from "../src/sim/world.js";
-import { homing } from "../src/sim/behaviors.js";
+import { Vector2 } from "@dogfight/shared/sim/vector.js";
+import { Entity } from "@dogfight/shared/sim/entity.js";
+import { Ship } from "@dogfight/shared/sim/ship.js";
+import { Bullet } from "@dogfight/shared/sim/bullet.js";
+import { Asteroid } from "@dogfight/shared/sim/asteroid.js";
+import { Pickup } from "@dogfight/shared/sim/pickup.js";
+import { World } from "@dogfight/shared/sim/world.js";
+import { homing } from "@dogfight/shared/sim/behaviors.js";
 
 const none = { isDown: () => false, justPressed: () => false, endStep() {} };
 const fireKey = { ...none, isDown: (c) => c === "Space" };

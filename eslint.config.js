@@ -17,6 +17,8 @@ export default [
       "client/scripts/**/*.mjs",
       "client/*.config.js",
       "server/**/*.js",
+      "shared/**/*.js",
+      "shared/**/*.mjs",
       "server/**/*.mjs",
       "scripts/**/*.mjs",
       "*.config.js",

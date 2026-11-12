@@ -59,7 +59,7 @@ test("a socket that does not join in time is closed with 4001", () =>
     assert.equal(code, 4001);
   }));
 
-test("invalid messages close the socket with 1002; binary with 1003", () =>
+test("invalid messages (text or binary) close the socket with 1002", () =>
   withServer({}, async (s) => {
     const bad = [
       (ws) => ws.send("not json"),
@@ -79,10 +79,11 @@ test("invalid messages close the socket with 1002; binary with 1003", () =>
     twice.sendJson({ type: "join", room: "open-space", name: "Ace" });
     assert.equal((await twice.closed).code, 1002);
 
+    // binary frames are game inputs now; garbage that is not a valid input is a protocol error
     const bin = connect(s.wsUrl);
     await bin.opened;
     bin.send(Buffer.from([1, 2, 3]));
-    assert.equal((await bin.closed).code, 1003);
+    assert.equal((await bin.closed).code, 1002);
   }));
 
 test("a message over maxPayload closes with 1009 and the server keeps running", () =>

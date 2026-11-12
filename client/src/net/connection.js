@@ -3,7 +3,7 @@
 //  - send() queues while the socket is not open and flushes after the (re)connect
 //  - reconnects with exponential backoff + full jitter; `hello()` is re-sent first after every reconnect
 //    (that is how the player re-joins its room)
-//  - events: "open", "close" ({ code, reason }), "reconnecting" ({ attempt, delayMs }), "message", "message:<type>"
+//  - events: "binary" (detail: ArrayBuffer), "open", "close" ({ code, reason }), "reconnecting" ({ attempt, delayMs }), "message", "message:<type>"
 
 // Close codes after which retrying cannot help (same list as server/src/protocol.js; Lab 05 moves it to shared/).
 const NO_RECONNECT = new Set([1002, 1003, 1008, 1009, 4001, 4002, 4003, 4004]);
@@ -17,6 +17,8 @@ export class Connection extends EventTarget {
   #attempt = 0;
   #timer = null;
   #wanted = false; // false after close(): no more reconnects
+  bytesIn = 0; // payload bytes received / sent (for the netgraph)
+  bytesOut = 0;
 
   constructor({
     url,
@@ -45,9 +47,18 @@ export class Connection extends EventTarget {
     this.#ws?.close(code);
   }
 
+  /** Sends a pre-encoded game message (string or bytes) right now; dropped if the socket is not open. */
+  sendRaw(data) {
+    if (!this.connected) return false;
+    this.bytesOut += typeof data === "string" ? data.length : data.byteLength;
+    this.#ws.send(data);
+    return true;
+  }
+
   send(msg) {
     const text = JSON.stringify({ v: PROTOCOL_VERSION, ...msg });
     if (this.connected) {
+      this.bytesOut += text.length;
       this.#ws.send(text);
     } else {
       this.#queue.push(text);
@@ -70,6 +81,7 @@ export class Connection extends EventTarget {
     if (this.#ws) return;
     const { url, hello, WebSocketImpl } = this.#opts;
     const ws = new WebSocketImpl(url);
+    ws.binaryType = "arraybuffer"; // binary frames arrive as ArrayBuffer (snapshots), not Blob
     this.#ws = ws;
 
     ws.onopen = () => {
@@ -79,6 +91,12 @@ export class Connection extends EventTarget {
       this.#emit("open");
     };
     ws.onmessage = (event) => {
+      if (typeof event.data !== "string") {
+        this.bytesIn += event.data.byteLength;
+        this.#emit("binary", event.data); // a game snapshot: the NetGame decodes it with the codec
+        return;
+      }
+      this.bytesIn += event.data.length;
       let msg;
       try {
         msg = JSON.parse(event.data);
@@ -106,5 +124,11 @@ export class Connection extends EventTarget {
   }
 }
 
-export const wsUrl = (loc = globalThis.location) =>
-  `${loc.protocol === "https:" ? "wss" : "ws"}://${loc.host}/ws`;
+// ws://host/ws, forwarding ?rtt= ?jitter= ?drop= from the page URL: the server's latency injector reads them.
+export function wsUrl(loc = globalThis.location) {
+  const page = new URLSearchParams(loc.search);
+  const forward = new URLSearchParams();
+  for (const key of ["rtt", "jitter", "drop"]) if (page.has(key)) forward.set(key, page.get(key));
+  const query = forward.size ? `?${forward}` : "";
+  return `${loc.protocol === "https:" ? "wss" : "ws"}://${loc.host}/ws${query}`;
+}

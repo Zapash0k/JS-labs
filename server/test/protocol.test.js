@@ -8,7 +8,7 @@ test("validate accepts well-formed messages and returns a clean copy", () => {
   const raw = { v: 1, type: "join", room: "open-space", name: "  Ace ", evil: "__proto__" };
   const r = validate(raw);
   assert.equal(r.ok, true);
-  assert.deepEqual(r.msg, { v: 1, type: "join", room: "open-space", name: "Ace" });
+  assert.deepEqual(r.msg, { v: 1, type: "join", room: "open-space", name: "Ace", codec: "binary" });
   assert.deepEqual(validate({ v: 1, type: "chat", text: " hi " }).msg, {
     v: 1,
     type: "chat",

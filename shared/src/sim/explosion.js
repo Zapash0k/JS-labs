@@ -5,7 +5,7 @@ import { Vector2 } from "./vector.js";
 export class Explosion extends Entity {
   static DURATION = 0.7;
 
-  constructor(x, y, rng = Math.random, count = 24) {
+  constructor(x, y, rng, count = 24) {
     super(x, y, { kind: "explosion", radius: 0, edge: "none", collidable: false });
     this.ttl = Explosion.DURATION;
     this.particles = Array.from({ length: count }, () => ({

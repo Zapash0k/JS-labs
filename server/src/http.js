@@ -98,7 +98,7 @@ function parseNewRoom(body, config) {
   return out;
 }
 
-export function createHttpHandler({ config, rooms, getStats }) {
+export function createHttpHandler({ config, rooms, getStats, getMatches = () => [] }) {
   async function route(req, res, url) {
     const { pathname } = url;
 
@@ -109,6 +109,15 @@ export function createHttpHandler({ config, rooms, getStats }) {
         rss: process.memoryUsage().rss,
         rooms: rooms.size,
         ...getStats(),
+      });
+    }
+
+    if (pathname === "/api/stats") {
+      return sendJson(res, 200, {
+        uptimeSec: Math.round(process.uptime()),
+        rss: process.memoryUsage().rss,
+        ...getStats(),
+        matches: getMatches(), // tick duration and jitter per running match
       });
     }
 

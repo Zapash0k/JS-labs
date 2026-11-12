@@ -7,6 +7,7 @@ export class Bullet extends Entity {
     this.owner = owner;
     this.damage = 10;
     this.ttl = 2;
+    this.fireSeq = 0; // sequence number of the input that fired it (matches predicted bullets)
   }
 
   think(dt) {

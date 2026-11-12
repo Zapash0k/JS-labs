@@ -1,8 +1,8 @@
 // Offline illustration of experiment 3: variable vs fixed timestep under different frame rates.
 // Uses the real sim modules (no DOM). The browser experiment (DevTools CPU 6x throttling)
 // is the one to report; this script just shows the same effect reproducibly.
-import { createShip, integrate } from "../src/sim/ship.js";
-import { wrap } from "../src/sim/arena.js";
+import { createShip, integrate } from "@dogfight/shared/sim/ship.js";
+import { wrap } from "@dogfight/shared/sim/arena.js";
 
 const W = 1920;
 const H = 1080;

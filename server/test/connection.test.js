@@ -79,7 +79,7 @@ test("close() stops reconnecting for good; the send queue is bounded", async () 
     const watcher = connect(s.wsUrl);
     await watcher.opened;
     watcher.sendJson(hello());
-    watcher.on("message", (d) => seen.push(JSON.parse(d).text));
+    watcher.on("message", (d, isBinary) => !isBinary && seen.push(JSON.parse(d).text));
     offline.open();
     await sleep(300);
     // rate limiting (burst 20) cuts the flood, but at most 100 were ever queued

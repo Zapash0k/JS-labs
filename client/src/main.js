@@ -1,6 +1,7 @@
 import { createLoop } from "./loop.js";
 import { createInput } from "./input.js";
-import { World } from "./sim/world.js";
+import { World } from "@dogfight/shared/sim/world.js";
+import { mulberry32 } from "@dogfight/shared/prng.js";
 import { setupCanvas } from "./render/canvas.js";
 import { drawBackground, drawHud, drawWorld, makeStars } from "./render/draw.js";
 import { drawLoading } from "./render/loading.js";
@@ -14,6 +15,10 @@ import { mountLobbyView } from "./lobby/lobbyView.js";
 import { once } from "./events.js";
 import { Connection, wsUrl } from "./net/connection.js";
 import { mountChat } from "./chatView.js";
+import { NetGame } from "./net/netgame.js";
+import { drawNetgraph } from "./net/netgraph.js";
+import { mountNetUi } from "./net/netui.js";
+import { TICK_DT, WORLD_SIZE } from "@dogfight/shared/protocol.js";
 
 // Experiment switches, set through the URL:
 // Lab 01:
@@ -31,12 +36,23 @@ import { mountChat } from "./chatView.js";
 //   ?nolobby=1        skip the lobby and start the default arena (offline, no server needed)
 // Lab 04: without ?nolobby / ?auto the lobby talks to the Node server (npm run dev:server) over
 //   /api/rooms and a WebSocket on /ws; two windows in one room see each other's names and chat.
+// Lab 05: online play = server-authoritative. The client simulates at the server's 30 Hz, predicts its own
+// ship, reconciles with snapshots and interpolates everybody else.
+//   ?codec=json       JSON snapshots/inputs instead of the 12-byte / 18-byte-per-entity binary format
+//   ?rtt=100&jitter=30&drop=2   start with the server's latency injector on (also live sliders in the game)
+//   ?hashcheck=1      log the determinism hash in the console (compare with `npm run hash -w shared`)
 const params = new URLSearchParams(location.search);
 const busy = params.has("busy");
 const mode = params.get("loop") === "interval" ? "interval" : "raf";
 const fixed = params.get("step") !== "variable";
 const auto = params.has("auto");
 const bug = params.has("bug");
+const online = !(auto || params.has("nolobby"));
+const codecName = params.get("codec") === "json" ? "json" : "binary";
+if (params.has("hashcheck")) {
+  const { runScenario } = await import("@dogfight/shared/sim/scenario.js");
+  console.log(`[hashcheck] seed=42 ticks=1000 -> ${runScenario({ seed: 42, ticks: 1000 })}`);
+}
 const fail = params.get("fail");
 const sequential = params.has("seq");
 const delay = Number(params.get("delay")) || 0;
@@ -64,13 +80,16 @@ let game = null;
 let idleStars = makeStars(140, size.w, size.h);
 let assetInfo = "assets: loading";
 let autoResult = null;
-let net = null; // Connection to the server once joined
+let conn = null; // Connection to the server once joined
+let netGame = null; // NetGame (prediction, reconciliation, interpolation) once the server confirmed the join
 let frameCounter = 0;
 
 const loop = createLoop({
+  step: online ? TICK_DT : 1 / 60,
   mode,
   fixed,
   simulate(dt) {
+    if (netGame) return netGame.step(dt, input);
     if (!game) return;
     game.world.step(dt, input);
     input.endStep();
@@ -92,6 +111,7 @@ const loop = createLoop({
       }
     }
 
+    if (netGame) return renderNet(alpha, stats);
     if (!game) {
       if (!assets) drawLoading(ctx, size.w, size.h, loading);
       else drawBackground(ctx, size.w, size.h, idleStars);
@@ -110,7 +130,7 @@ const loop = createLoop({
       `shield ${p.shield.toFixed(1)}  rapid ${p.rapid.toFixed(1)}  homing ${p.homingAmmo.toFixed(1)}`,
       `entities: ${world.count}`,
       assetInfo,
-      `net: ${net ? (net.connected ? "connected" : "reconnecting...") : "offline"}`,
+      `net: ${conn ? (conn.connected ? "connected" : "reconnecting...") : "offline"}`,
       `sound: ${audio ? (audio.unlocked ? "on" : "click to enable") : "unavailable"}`,
       ...(auto ? [`auto @5s: ${autoResult ?? "running..."}`] : []),
     ]);
@@ -196,6 +216,7 @@ function startGame({ room = { id: "default", name: "default", arena: {} }, name 
   const arena = { ...(assets.json.arena ?? {}), ...room.arena };
   const world = new World(size, {
     hazards: !auto,
+    rng: mulberry32(Date.now()),
     asteroidTarget: arena.asteroids,
     pickups: arena.pickups,
   });
@@ -240,28 +261,89 @@ if (auto || params.has("nolobby")) {
 // The player picked a room: open the socket, send `join`, start the game when the server confirms.
 function joinRoom(lobby, view, { room, name }) {
   view.setStatus(`Joining ${room.name}...`);
-  const conn = new Connection({
+  conn = new Connection({
     url: wsUrl(),
-    hello: () => ({ type: "join", room: room.id, name }),
+    hello: () => ({ type: "join", room: room.id, name, codec: codecName }),
   });
+  const connection = conn;
   let joined = false;
 
-  conn.on("joined", () => {
+  connection.on("joined", (msg) => {
+    if (netGame) {
+      netGame.reset(msg.you.slot); // reconnected: the server has a new ship for us
+      return;
+    }
     joined = true;
-    net = conn;
     view.destroy();
-    mountChat(document.getElementById("chat"), conn);
-    startGame({ room, name });
+    mountChat(document.getElementById("chat"), connection);
+    startNetGame(connection, msg, room, name);
   });
-  conn.addEventListener("close", (e) => {
+  connection.addEventListener("close", (e) => {
     if (joined) return; // in-game: the chat view reports it and the wrapper reconnects
     // Refused (room full, bad name...) or the server is down: back to the lobby.
     view.setStatus(
       `Cannot join: ${e.detail.reason || `connection closed (${e.detail.code})`}`,
       true,
     );
-    conn.close();
+    connection.close();
+    conn = null;
     lobby.enter();
   });
-  conn.open();
+  connection.open();
+}
+
+function startNetGame(connection, joinedMsg, room, name) {
+  const arena = { ...(assets.json.arena ?? {}), ...room.arena };
+  netGame = new NetGame({
+    conn: connection,
+    codec: joinedMsg.codec,
+    slot: joinedMsg.you.slot,
+    world: joinedMsg.world ?? WORLD_SIZE,
+    tickHz: joinedMsg.tickRate,
+  });
+  const life = new AbortController();
+  audio?.attach(netGame.events, life.signal);
+  const page = new URLSearchParams(location.search);
+  mountNetUi(document.getElementById("netui"), netGame, {
+    rtt: Number(page.get("rtt")) || 0,
+    jitter: Number(page.get("jitter")) || 0,
+    drop: Number(page.get("drop")) || 0,
+  });
+  netInfo = {
+    pilot: name,
+    room: room.name,
+    codec: joinedMsg.codec,
+    stars: makeStars(arena.stars ?? 140, size.w, size.h),
+    background: arena.background,
+  };
+}
+
+let netInfo = null;
+
+// The authoritative world is WORLD_SIZE; it is scaled to fit the window (letterboxed).
+function renderNet(alpha, stats) {
+  const frameDt = Math.min(0.1, (stats.frameMs || 16.7) / 1000);
+  netGame.update(frameDt);
+  const k = Math.min(size.w / WORLD_SIZE.w, size.h / WORLD_SIZE.h);
+  drawBackground(ctx, size.w, size.h, netInfo.stars, netInfo.background);
+  ctx.save();
+  ctx.translate((size.w - WORLD_SIZE.w * k) / 2, (size.h - WORLD_SIZE.h * k) / 2);
+  ctx.scale(k, k);
+  ctx.strokeStyle = "#1c2740";
+  ctx.strokeRect(0, 0, WORLD_SIZE.w, WORLD_SIZE.h);
+  ctx.beginPath();
+  ctx.rect(0, 0, WORLD_SIZE.w, WORLD_SIZE.h);
+  ctx.clip();
+  drawWorld(ctx, netGame.drawables(alpha), 1, WORLD_SIZE, sprites);
+  ctx.restore();
+  drawNetgraph(ctx, netGame, size.w - 380, 24, {
+    codec: netInfo.codec,
+    connected: conn?.connected ?? false,
+  });
+  drawHud(ctx, stats, [
+    `pilot: ${netInfo.pilot} · room: ${netInfo.room} · slot ${netGame.slot}`,
+    netGame.local ? `hp: ${netGame.stats.hp}` : "dead: waiting for respawn",
+    assetInfo,
+    `sound: ${audio ? (audio.unlocked ? "on" : "click to enable") : "unavailable"}`,
+  ]);
 }

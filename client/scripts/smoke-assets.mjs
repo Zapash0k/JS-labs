@@ -13,9 +13,9 @@ import {
 import { injectFailure } from "../src/assets/failures.js";
 import { Lobby } from "../src/lobby/lobby.js";
 import { once } from "../src/events.js";
-import { World } from "../src/sim/world.js";
-import { Asteroid } from "../src/sim/asteroid.js";
-import { Vector2 } from "../src/sim/vector.js";
+import { World } from "@dogfight/shared/sim/world.js";
+import { Asteroid } from "@dogfight/shared/sim/asteroid.js";
+import { Vector2 } from "@dogfight/shared/sim/vector.js";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const noWait = () => Promise.resolve();
@@ -165,7 +165,7 @@ const noWait = () => Promise.resolve();
 
 // ---- the sim talks through events and imports neither audio nor HUD ----
 {
-  const dir = fileURLToPath(new URL("../src/sim/", import.meta.url));
+  const dir = fileURLToPath(new URL("../../shared/src/sim/", import.meta.url));
   for (const f of readdirSync(dir)) {
     const imports = [...readFileSync(dir + f, "utf8").matchAll(/from\s+["']([^"']+)["']/g)].map(
       (m) => m[1],

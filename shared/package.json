@@ -1,0 +1,17 @@
+{
+  "name": "@dogfight/shared",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Code that runs on BOTH sides: simulation, seeded PRNG, protocol constants, codecs. No DOM, no Node built-ins.",
+  "exports": {
+    "./sim/*": "./src/sim/*",
+    "./codec/*": "./src/codec/*",
+    "./prng.js": "./src/prng.js",
+    "./protocol.js": "./src/protocol.js"
+  },
+  "scripts": {
+    "test": "node --test --test-reporter=spec \"test/*.test.js\"",
+    "hash": "node scripts/hash.mjs"
+  }
+}

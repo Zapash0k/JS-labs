@@ -2,6 +2,7 @@ import http from "node:http";
 import { createHttpHandler } from "./http.js";
 import { startMatchLog } from "./log/matchlog.js";
 import { CLOSE } from "./protocol.js";
+import { Match } from "./match.js";
 import { RoomManager } from "./rooms.js";
 import { attachWebSocket } from "./ws.js";
 
@@ -25,6 +26,11 @@ export function createApp(config, { log = console } = {}) {
     defaultArena: { asteroids: 6, pickups: true },
   });
 
+  // Every room has an authoritative Match (it only ticks while somebody is in it).
+  rooms.on("created", (room) => {
+    room.match = new Match({ room, log });
+  });
+
   // One match log per room; `pending` lets shutdown wait until every file is flushed.
   const pending = new Set();
   rooms.on("created", (room) => {
@@ -40,7 +46,16 @@ export function createApp(config, { log = console } = {}) {
   const wss = attachWebSocket({ server, rooms, config, log });
   server.on(
     "request",
-    createHttpHandler({ config, rooms, getStats: () => ({ connections: wss.clients.size }) }),
+    createHttpHandler({
+      config,
+      rooms,
+      getStats: () => ({ connections: wss.clients.size }),
+      getMatches: () =>
+        rooms
+          .list()
+          .filter((r) => r.match?.running)
+          .map((r) => r.match.stats()),
+    }),
   );
 
   for (const { id, ...opts } of DEFAULT_ROOMS) rooms.create(id, { ...opts, persistent: true });

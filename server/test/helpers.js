@@ -39,7 +39,9 @@ export function connect(url, opts) {
   const ws = new WebSocket(url, opts);
   ws.inbox = [];
   const waiters = [];
-  ws.on("message", (data) => {
+  ws.snapshots = []; // binary frames (game snapshots) are kept apart from the JSON control messages
+  ws.on("message", (data, isBinary) => {
+    if (isBinary) return ws.snapshots.push(data);
     const msg = JSON.parse(data.toString());
     ws.inbox.push(msg);
     for (const w of [...waiters])

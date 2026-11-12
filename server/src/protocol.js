@@ -5,13 +5,20 @@
 //   { v:1, type:"join",  room, name }
 //   { v:1, type:"chat",  text }
 //   { v:1, type:"leave" }
+//   { v:1, type:"ping", t }                               RTT probe, echoed back as "pong"
+//   { v:1, type:"netsim", rtt, jitter, drop }             live latency injector (ms, ms, %)
+//   input  -> see shared/src/codec (JSON text or 12 binary bytes)
 // server -> client
-//   { v:1, type:"joined", room, you:{ id, name } }
+//   { v:1, type:"joined", room, you:{ id, name, slot }, tickRate, seed, world:{w,h}, codec }
+//   { v:1, type:"pong",   t }
+//   snapshot -> see shared/src/codec
 //   { v:1, type:"roster", room, players:[{ id, name }] }
 //   { v:1, type:"chat",   from:{ id, name }, text, t }
 //   { v:1, type:"error",  code, message }
 
-export const PROTOCOL_VERSION = 1;
+import { PROTOCOL_VERSION, validateInput } from "@dogfight/shared/protocol.js";
+
+export { PROTOCOL_VERSION };
 
 export const CLOSE = Object.freeze({
   NORMAL: 1000,
@@ -66,7 +73,22 @@ const CLIENT_TYPES = {
     if (typeof m.name !== "string") return "name must be a string";
     const name = m.name.trim();
     if (!isPlayerName(name)) return "name must be 1-16 letters, digits, space, '_' or '-'";
-    return { room: m.room, name };
+    if (m.codec !== undefined && m.codec !== "json" && m.codec !== "binary")
+      return "codec must be json or binary";
+    return { room: m.room, name, codec: m.codec ?? "binary" };
+  },
+  input(m) {
+    const checked = validateInput(m);
+    return checked.ok ? checked.cmd : checked.reason;
+  },
+  ping(m) {
+    return typeof m.t === "number" && Number.isFinite(m.t) ? { t: m.t } : "t must be a number";
+  },
+  netsim(m) {
+    const ok = (x, max) => typeof x === "number" && Number.isFinite(x) && x >= 0 && x <= max;
+    if (!ok(m.rtt, 2000) || !ok(m.jitter, 1000) || !ok(m.drop, 100))
+      return "rtt 0-2000, jitter 0-1000, drop 0-100";
+    return { rtt: m.rtt, jitter: m.jitter, drop: m.drop };
   },
   chat(m) {
     if (typeof m.text !== "string") return "text must be a string";

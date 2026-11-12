@@ -42,6 +42,15 @@ const SCHEMA = {
   ratePerSec: int("RATE_PER_SEC", 10, { min: 1 }), // sustained messages per second
   slowClientBytes: int("SLOW_CLIENT_BYTES", 64 * 1024, { min: 1 }), // socket.bufferedAmount threshold
 
+  inputBurst: int("INPUT_BURST", 30, { min: 1 }), // game inputs have their own bucket: ~30 per second are normal
+  inputPerSec: int("INPUT_PER_SEC", 40, { min: 1 }),
+
+  // latency injector (Lab 05): added to both directions of every socket; clients can change it live
+  netsim: (env) => env.NETSIM !== "0",
+  netsimRttMs: int("NETSIM_RTT_MS", 0, { max: 2000 }),
+  netsimJitterMs: int("NETSIM_JITTER_MS", 0, { max: 1000 }),
+  netsimDropPct: int("NETSIM_DROP_PCT", 0, { max: 100 }),
+
   // timing
   joinTimeoutMs: int("JOIN_TIMEOUT_MS", 5000, { min: 1 }),
   heartbeatMs: int("HEARTBEAT_MS", 15000, { min: 10 }),

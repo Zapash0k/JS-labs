@@ -3,7 +3,7 @@ import { Entity } from "./entity.js";
 export class Asteroid extends Entity {
   #hp = 30;
 
-  constructor(x, y, vel, rng = Math.random) {
+  constructor(x, y, vel, rng) {
     super(x, y, { kind: "asteroid", radius: 28, edge: "bounce" });
     this.vel = vel;
     this.spin = (rng() - 0.5) * 1.5;

@@ -4,14 +4,12 @@ import { Vector2 } from "./vector.js";
 // Ship / Bullet / Asteroid / Pickup / Explosion extend Entity, nothing extends them.
 // Extra behavior is attached as composition via `behaviors` (see behaviors.js).
 export class Entity {
-  static #nextId = 1;
-  #id = Entity.#nextId++;
-
   constructor(
     x = 0,
     y = 0,
     { kind = "entity", radius = 10, edge = "wrap", collidable = true } = {},
   ) {
+    this.id = null; // assigned by World.spawn (deterministic per world, same on server and client)
     this.kind = kind;
     this.radius = radius;
     this.edge = edge; // "wrap" | "bounce" | "none" — how the arena treats this entity
@@ -24,10 +22,6 @@ export class Entity {
     this.alive = true;
     this.world = null; // set by World.spawn
     this.behaviors = []; // composed behaviors: { update(entity, dt, world) }
-  }
-
-  get id() {
-    return this.#id;
   }
 
   update(dt, world = this.world, input = null) {

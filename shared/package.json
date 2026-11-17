@@ -3,15 +3,20 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "Code that runs on BOTH sides: simulation, seeded PRNG, protocol constants, codecs. No DOM, no Node built-ins.",
+  "description": "Code that runs on BOTH sides: simulation, seeded PRNG, protocol schemas, codecs. TypeScript source, no DOM, no Node built-ins.",
   "exports": {
-    "./sim/*": "./src/sim/*",
-    "./codec/*": "./src/codec/*",
-    "./prng.js": "./src/prng.js",
-    "./protocol.js": "./src/protocol.js"
+    "./brand.js": "./src/brand.ts",
+    "./prng.js": "./src/prng.ts",
+    "./protocol.js": "./src/protocol.ts",
+    "./sim/*.js": "./src/sim/*.ts",
+    "./codec/*.js": "./src/codec/*.ts"
   },
   "scripts": {
-    "test": "node --test --test-reporter=spec \"test/*.test.js\"",
+    "test": "node --test --test-reporter=spec \"test/*.test.ts\"",
+    "typecheck": "tsc --noEmit -p .",
     "hash": "node scripts/hash.mjs"
+  },
+  "dependencies": {
+    "zod": "^4.6.7"
   }
 }

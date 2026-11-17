@@ -2,10 +2,10 @@
 // Ship (class, used by the server's World and by single-player) delegates here, and the client's
 // prediction calls the same function with the same dt, which is what makes prediction exact.
 //
-// A ship state is { x, y, vx, vy, angle, thrust, cooldown, invuln, shield, rapid, homingAmmo }.
-// A command is    { thrust: boolean, turn: -1..1, fire: boolean }.
+// A ship state is a ShipState, a command is a ShipCommand: { thrust: boolean, turn: -1..1, fire: boolean }.
 
-import { wrapCoord } from "./arena.js";
+import { wrapCoord } from "./arena.ts";
+import type { Seq } from "../brand.ts";
 
 export const TURN_RATE = 3.5; // rad/s
 export const ACCEL = 320; // px/s^2
@@ -14,7 +14,45 @@ export const MAX_SPEED = 420; // px/s
 export const BULLET_SPEED = 600; // px/s, relative to the ship
 export const SHIP_RADIUS = 12;
 
-export const createShipState = (x = 0, y = 0) => ({
+/** Plain-number copy of a ship's movement state (what prediction and snapshots work with). */
+export interface ShipState {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  angle: number;
+  thrust: boolean;
+  cooldown: number;
+  invuln: number;
+  shield: number;
+  rapid: number;
+  homingAmmo: number;
+}
+
+/** What a player asked for in one step. `seq` is set for networked inputs, absent for the keyboard. */
+export interface ShipCommand {
+  readonly seq?: Seq;
+  readonly thrust: boolean;
+  readonly turn: number; // -1..1
+  readonly fire: boolean;
+}
+
+/** Structural: anything with isDown(code) is a keyboard (client/src/input.js, or a test double). */
+export interface KeyInput {
+  isDown(code: string): boolean;
+}
+
+/** Where and how fast a new bullet starts. */
+export interface BulletSpec {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  angle: number;
+  homing: boolean;
+}
+
+export const createShipState = (x = 0, y = 0): ShipState => ({
   x,
   y,
   vx: 0,
@@ -28,10 +66,10 @@ export const createShipState = (x = 0, y = 0) => ({
   homingAmmo: 0,
 });
 
-export const NO_COMMAND = Object.freeze({ thrust: false, turn: 0, fire: false });
+export const NO_COMMAND: ShipCommand = Object.freeze({ thrust: false, turn: 0, fire: false });
 
 /** Keyboard (input.isDown) -> command. */
-export function commandFromInput(input) {
+export function commandFromInput(input: KeyInput): ShipCommand {
   const left = input.isDown("ArrowLeft") || input.isDown("KeyA");
   const right = input.isDown("ArrowRight") || input.isDown("KeyD");
   return {
@@ -42,7 +80,7 @@ export function commandFromInput(input) {
 }
 
 /** Fires if the cooldown allows. Mutates the cooldown, returns a bullet description or null. */
-export function tryFire(s) {
+export function tryFire(s: ShipState): BulletSpec | null {
   if (s.cooldown > 0) return null;
   s.cooldown = s.rapid > 0 ? 0.08 : 0.25;
   const dx = Math.cos(s.angle);
@@ -62,7 +100,13 @@ export function tryFire(s) {
  * timers -> turn -> thrust -> drag -> speed cap -> fire -> move -> wrap.
  * Pass w/h = 0 to skip wrapping. Returns a bullet description if the ship fired, else null.
  */
-export function stepShipState(s, cmd, dt, w = 0, h = 0) {
+export function stepShipState(
+  s: ShipState,
+  cmd: ShipCommand,
+  dt: number,
+  w = 0,
+  h = 0,
+): BulletSpec | null {
   s.cooldown = Math.max(0, s.cooldown - dt);
   s.invuln = Math.max(0, s.invuln - dt);
   s.shield = Math.max(0, s.shield - dt);

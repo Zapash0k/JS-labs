@@ -1,23 +1,30 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { slugify, validate, isRoomId, isPlayerName } from "../src/protocol.js";
+import { parseClientMessage } from "@dogfight/shared/protocol.js";
+import { slugify, isRoomId, isPlayerName } from "../src/protocol.js";
 import { TokenBucket } from "../src/ratelimit.js";
 import { ConfigError, loadConfig } from "../src/config.js";
 
-test("validate accepts well-formed messages and returns a clean copy", () => {
+test("parseClientMessage accepts well-formed messages and returns a clean copy", () => {
   const raw = { v: 1, type: "join", room: "open-space", name: "  Ace ", evil: "__proto__" };
-  const r = validate(raw);
+  const r = parseClientMessage(raw);
   assert.equal(r.ok, true);
-  assert.deepEqual(r.msg, { v: 1, type: "join", room: "open-space", name: "Ace", codec: "binary" });
-  assert.deepEqual(validate({ v: 1, type: "chat", text: " hi " }).msg, {
+  assert.deepEqual(r.value, {
+    v: 1,
+    type: "join",
+    room: "open-space",
+    name: "Ace",
+    codec: "binary",
+  });
+  assert.deepEqual(parseClientMessage({ v: 1, type: "chat", text: " hi " }).value, {
     v: 1,
     type: "chat",
     text: "hi",
   });
-  assert.equal(validate({ v: 1, type: "leave" }).ok, true);
+  assert.equal(parseClientMessage({ v: 1, type: "leave" }).ok, true);
 });
 
-test("validate rejects bad shapes", () => {
+test("parseClientMessage rejects bad shapes", () => {
   const bad = [
     null,
     [],
@@ -27,7 +34,7 @@ test("validate rejects bad shapes", () => {
     { type: "chat", text: "hi" }, // no version
     { v: 2, type: "chat", text: "hi" },
     { v: 1, type: "nope" },
-    { v: 1, type: "constructor" }, // not an own key of the table
+    { v: 1, type: "constructor" }, // not a member of the union
     { v: 1, type: "join", room: "Bad Room", name: "a" },
     { v: 1, type: "join", room: "ok", name: "" },
     { v: 1, type: "join", room: "ok", name: "x".repeat(17) },
@@ -36,7 +43,7 @@ test("validate rejects bad shapes", () => {
     { v: 1, type: "chat", text: "x".repeat(281) },
     { v: 1, type: "chat", text: { a: 1 } },
   ];
-  for (const m of bad) assert.equal(validate(m).ok, false, JSON.stringify(m));
+  for (const m of bad) assert.equal(parseClientMessage(m).ok, false, JSON.stringify(m));
 });
 
 test("ids and names", () => {

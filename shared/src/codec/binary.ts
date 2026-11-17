@@ -32,7 +32,26 @@
 //      u16 p3            bullet: fire seq & 0xFFFF
 //   -- eventCount x 10 bytes
 //      u8 type (1 fired, 2 hit, 3 exploded), u8 slot (255 = none), f32 x, f32 y
-import { EFFECT_NAMES, EVENT, EVENT_NAME, KIND, KIND_NAME, PROTOCOL_VERSION } from "../protocol.js";
+import { asSeq, asTick } from "../brand.ts";
+import {
+  EFFECT_NAMES,
+  EVENT,
+  EVENT_NAME,
+  KIND,
+  KIND_NAME,
+  PROTOCOL_VERSION,
+} from "../constants.ts";
+import { CodecError } from "./types.ts";
+import type {
+  InputCommand,
+  SelfState,
+  Snapshot,
+  SnapshotEntity,
+  SnapshotEvent,
+} from "../protocol.ts";
+import type { BinaryCodec } from "./types.ts";
+
+export { CodecError } from "./types.ts";
 
 export const name = "binary";
 export const isBinary = true;
@@ -46,35 +65,33 @@ const ENTITY_BYTES = 18;
 const EVENT_BYTES = 10;
 const LE = true;
 
-export class CodecError extends Error {
-  constructor(message) {
-    super(message);
-    this.name = "CodecError";
-  }
-}
+type Bytes = Uint8Array | ArrayBuffer;
 
-const view = (data) =>
+const view = (data: Bytes): DataView =>
   data instanceof ArrayBuffer
     ? new DataView(data)
     : new DataView(data.buffer, data.byteOffset, data.byteLength); // Uint8Array / Node Buffer
 
 const TAU = Math.PI * 2;
-export const wrapAngle = (a) => ((((a + Math.PI) % TAU) + TAU) % TAU) - Math.PI;
-const encodeAngle = (a) => Math.round(wrapAngle(a) * 1000);
-const decodeAngle = (q) => q / 1000;
-const u8 = (n) => Math.max(0, Math.min(255, Math.round(n)));
+export const wrapAngle = (a: number): number => ((((a + Math.PI) % TAU) + TAU) % TAU) - Math.PI;
+const encodeAngle = (a: number): number => Math.round(wrapAngle(a) * 1000);
+const decodeAngle = (q: number): number => q / 1000;
+const u8 = (n: number): number => Math.max(0, Math.min(255, Math.round(n)));
 
 /** The value the server will actually see for a command (turn is stored as an i8). Clients predict with this. */
-export const quantizeCommand = (cmd) => ({ ...cmd, turn: Math.round(cmd.turn * 127) / 127 + 0 }); // + 0 turns -0 into 0
+export const quantizeCommand = <T extends { readonly turn: number }>(cmd: T): T => ({
+  ...cmd,
+  turn: Math.round(cmd.turn * 127) / 127 + 0, // + 0 turns -0 into 0
+});
 
-export function peekType(data) {
+export function peekType(data: Bytes): number {
   const v = view(data);
   if (v.byteLength < 2) throw new CodecError("message too short");
   if (v.getUint8(1) !== PROTOCOL_VERSION) throw new CodecError("unsupported binary version");
   return v.getUint8(0);
 }
 
-export function encodeInput(cmd) {
+export function encodeInput(cmd: InputCommand): Uint8Array {
   const out = new Uint8Array(INPUT_BYTES);
   const v = new DataView(out.buffer);
   v.setUint8(0, MSG_INPUT);
@@ -86,7 +103,7 @@ export function encodeInput(cmd) {
   return out;
 }
 
-export function decodeInput(data) {
+export function decodeInput(data: Bytes): InputCommand {
   const v = view(data);
   if (v.byteLength !== INPUT_BYTES) throw new CodecError(`input must be ${INPUT_BYTES} bytes`);
   if (peekType(data) !== MSG_INPUT) throw new CodecError("not an input message");
@@ -94,14 +111,15 @@ export function decodeInput(data) {
   const turn = v.getInt8(11);
   if (turn < -127) throw new CodecError("bad turn"); // -128 is not a valid encoding
   return {
-    seq: v.getUint32(2, LE),
-    tick: v.getUint32(6, LE),
+    seq: asSeq(v.getUint32(2, LE)),
+    tick: asTick(v.getUint32(6, LE)),
     thrust: (flags & 1) !== 0,
     fire: (flags & 2) !== 0,
     turn: turn / 127,
   };
 }
 
+// The order of the ten f32 fields of `self` on the wire.
 const SELF_FIELDS = [
   "x",
   "y",
@@ -113,9 +131,9 @@ const SELF_FIELDS = [
   "homingAmmo",
   "shield",
   "invuln",
-];
+] as const satisfies readonly (keyof SelfState)[];
 
-export function encodeSnapshot(snap) {
+export function encodeSnapshot(snap: Snapshot): Uint8Array {
   const { self, entities, events } = snap;
   const size =
     HEADER_BYTES +
@@ -148,19 +166,29 @@ export function encodeSnapshot(snap) {
     let p1 = 0;
     let p2 = 0;
     let p3 = 0;
-    if (e.kind === "ship") {
-      flags = (e.thrust ? 1 : 0) | (e.shield ? 2 : 0) | (e.invuln ? 4 : 0);
-      p1 = u8(e.hp);
-      p2 = e.slot;
-    } else if (e.kind === "bullet") {
-      flags = e.homing ? 1 : 0;
-      p1 = e.slot;
-      p3 = e.seq & 0xffff;
-    } else if (e.kind === "asteroid") {
-      flags = e.hunter ? 1 : 0;
-      p1 = u8(e.radius);
-    } else if (e.kind === "pickup") {
-      p1 = EFFECT_NAMES.indexOf(e.effect);
+    switch (e.kind) {
+      case "ship":
+        flags = (e.thrust ? 1 : 0) | (e.shield ? 2 : 0) | (e.invuln ? 4 : 0);
+        p1 = u8(e.hp);
+        p2 = e.slot;
+        break;
+      case "bullet":
+        flags = e.homing ? 1 : 0;
+        p1 = e.slot;
+        p3 = e.seq & 0xffff;
+        break;
+      case "asteroid":
+        flags = e.hunter ? 1 : 0;
+        p1 = u8(e.radius);
+        break;
+      case "pickup":
+        p1 = EFFECT_NAMES.indexOf(e.effect);
+        break;
+      default: {
+        // A new entity kind without a wire layout stops compiling here, not in production.
+        const _exhaustive: never = e;
+        return _exhaustive;
+      }
     }
     v.setUint8(o + 3, flags);
     v.setFloat32(o + 4, e.x, LE);
@@ -182,7 +210,7 @@ export function encodeSnapshot(snap) {
   return out;
 }
 
-export function decodeSnapshot(data) {
+export function decodeSnapshot(data: Bytes): Snapshot {
   const v = view(data);
   if (v.byteLength < HEADER_BYTES) throw new CodecError("snapshot too short");
   if (peekType(data) !== MSG_SNAPSHOT) throw new CodecError("not a snapshot");
@@ -197,61 +225,110 @@ export function decodeSnapshot(data) {
     EVENT_BYTES * eventCount;
   if (v.byteLength !== expected)
     throw new CodecError(`snapshot length ${v.byteLength}, expected ${expected}`);
+
+  // Range check: a float that is NaN or infinite never comes from a healthy server.
+  const f32 = (at: number): number => {
+    const n = v.getFloat32(at, LE);
+    if (!Number.isFinite(n)) throw new CodecError("non-finite number");
+    return n;
+  };
   let o = HEADER_BYTES;
 
-  let self = null;
+  let self: SelfState | null = null;
   if (hasSelf) {
-    self = {};
-    for (const f of SELF_FIELDS) {
-      self[f] = v.getFloat32(o, LE);
-      o += 4;
-    }
-    self.thrust = (flags & 2) !== 0;
-    self.hp = v.getUint8(o++);
+    // Same order as SELF_FIELDS / encodeSnapshot (the round-trip test pins it).
+    self = {
+      x: f32(o),
+      y: f32(o + 4),
+      vx: f32(o + 8),
+      vy: f32(o + 12),
+      angle: f32(o + 16),
+      cooldown: f32(o + 20),
+      rapid: f32(o + 24),
+      homingAmmo: f32(o + 28),
+      shield: f32(o + 32),
+      invuln: f32(o + 36),
+      thrust: (flags & 2) !== 0,
+      hp: v.getUint8(o + 40),
+    };
+    o += SELF_BYTES;
   }
 
-  const entities = [];
+  const entities: SnapshotEntity[] = [];
   for (let i = 0; i < entityCount; i++, o += ENTITY_BYTES) {
     const kind = KIND_NAME[v.getUint8(o + 2)];
     if (!kind) throw new CodecError("unknown entity kind");
     const f = v.getUint8(o + 3);
     const p1 = v.getUint8(o + 14);
     const p2 = v.getUint8(o + 15);
-    const e = {
-      id: v.getUint16(o, LE),
-      kind,
-      x: v.getFloat32(o + 4, LE),
-      y: v.getFloat32(o + 8, LE),
-      angle: decodeAngle(v.getInt16(o + 12, LE)),
-    };
-    if (kind === "ship")
-      Object.assign(e, {
-        slot: p2,
-        hp: p1,
-        thrust: !!(f & 1),
-        shield: !!(f & 2),
-        invuln: !!(f & 4),
-      });
-    else if (kind === "bullet")
-      Object.assign(e, { slot: p1, seq: v.getUint16(o + 16, LE), homing: !!(f & 1) });
-    else if (kind === "asteroid") Object.assign(e, { radius: p1, hunter: !!(f & 1) });
-    else {
-      if (p1 >= EFFECT_NAMES.length) throw new CodecError("unknown pickup effect");
-      e.effect = EFFECT_NAMES[p1];
+    const id = v.getUint16(o, LE);
+    const x = f32(o + 4);
+    const y = f32(o + 8);
+    const angle = decodeAngle(v.getInt16(o + 12, LE));
+    switch (kind) {
+      case "ship":
+        entities.push({
+          id,
+          kind,
+          x,
+          y,
+          angle,
+          slot: p2,
+          hp: p1,
+          thrust: !!(f & 1),
+          shield: !!(f & 2),
+          invuln: !!(f & 4),
+        });
+        break;
+      case "bullet":
+        entities.push({
+          id,
+          kind,
+          x,
+          y,
+          angle,
+          slot: p1,
+          seq: v.getUint16(o + 16, LE),
+          homing: !!(f & 1),
+        });
+        break;
+      case "asteroid":
+        entities.push({ id, kind, x, y, angle, radius: p1, hunter: !!(f & 1) });
+        break;
+      case "pickup": {
+        const effect = EFFECT_NAMES[p1];
+        if (effect === undefined) throw new CodecError("unknown pickup effect");
+        entities.push({ id, kind, x, y, angle, effect });
+        break;
+      }
+      default: {
+        const _exhaustive: never = kind;
+        throw new CodecError(`unhandled entity kind ${String(_exhaustive)}`);
+      }
     }
-    entities.push(e);
   }
 
-  const events = [];
+  const events: SnapshotEvent[] = [];
   for (let i = 0; i < eventCount; i++, o += EVENT_BYTES) {
     const type = EVENT_NAME[v.getUint8(o)];
     if (!type) throw new CodecError("unknown event type");
-    events.push({
-      type,
-      slot: v.getUint8(o + 1),
-      x: v.getFloat32(o + 2, LE),
-      y: v.getFloat32(o + 6, LE),
-    });
+    events.push({ type, slot: v.getUint8(o + 1), x: f32(o + 2), y: f32(o + 6) });
   }
-  return { tick: v.getUint32(2, LE), ack: v.getUint32(6, LE), self, entities, events };
+  return {
+    tick: asTick(v.getUint32(2, LE)),
+    ack: asSeq(v.getUint32(6, LE)),
+    self,
+    entities,
+    events,
+  };
 }
+
+export const binaryCodec: BinaryCodec = {
+  name,
+  isBinary,
+  quantizeCommand,
+  encodeInput,
+  decodeInput,
+  encodeSnapshot,
+  decodeSnapshot,
+};

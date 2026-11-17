@@ -1,23 +1,38 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mulberry32 } from "../src/prng.js";
-import { CodecError, codecs } from "../src/codec/index.js";
-import { quantizeCommand, wrapAngle } from "../src/codec/binary.js";
-import { EFFECT_NAMES, validateInput } from "../src/protocol.js";
+import { asSeq, asTick } from "../src/brand.ts";
+import { mulberry32 } from "../src/prng.ts";
+import { CodecError, codecs } from "../src/codec/index.ts";
+import { quantizeCommand, wrapAngle } from "../src/codec/binary.ts";
+import { EFFECT_NAMES, parseClientMessage, parseInputCommand } from "../src/protocol.ts";
+import type { InputCommand, Snapshot, SnapshotEntity } from "../src/protocol.ts";
 
 const { json, binary } = codecs;
 const rnd = mulberry32(2026);
-const between = (a, b) => a + rnd() * (b - a);
-const pick = (xs) => xs[Math.floor(rnd() * xs.length)];
+const between = (a: number, b: number): number => a + rnd() * (b - a);
+function pick<T>(xs: readonly T[]): T {
+  const x = xs[Math.floor(rnd() * xs.length)];
+  if (x === undefined) throw new Error("pick from an empty list");
+  return x;
+}
 
-function randomEntity(i) {
+/** Plain numbers in, branded command out (the tests build commands from raw numbers). */
+const command = (o: {
+  seq: number;
+  tick: number;
+  thrust: boolean;
+  fire: boolean;
+  turn: number;
+}): InputCommand => ({ ...o, seq: asSeq(o.seq), tick: asTick(o.tick) });
+
+function randomEntity(i: number): SnapshotEntity {
   const base = {
     id: (i * 37) & 0xffff,
     x: between(0, 1280),
     y: between(0, 720),
     angle: between(-Math.PI, Math.PI),
   };
-  switch (pick(["ship", "bullet", "asteroid", "pickup"])) {
+  switch (pick(["ship", "bullet", "asteroid", "pickup"] as const)) {
     case "ship":
       return {
         ...base,
@@ -38,14 +53,14 @@ function randomEntity(i) {
       };
     case "asteroid":
       return { ...base, kind: "asteroid", radius: 28, hunter: rnd() < 0.3 };
-    default:
+    case "pickup":
       return { ...base, kind: "pickup", effect: pick(EFFECT_NAMES) };
   }
 }
 
-const randomSnapshot = () => ({
-  tick: Math.floor(rnd() * 1e6),
-  ack: Math.floor(rnd() * 1e6),
+const randomSnapshot = (): Snapshot => ({
+  tick: asTick(Math.floor(rnd() * 1e6)),
+  ack: asSeq(Math.floor(rnd() * 1e6)),
   self:
     rnd() < 0.8
       ? {
@@ -65,24 +80,38 @@ const randomSnapshot = () => ({
       : null,
   entities: Array.from({ length: Math.floor(rnd() * 20) }, (_, i) => randomEntity(i)),
   events: Array.from({ length: Math.floor(rnd() * 5) }, () => ({
-    type: pick(["fired", "hit", "exploded"]),
+    type: pick(["fired", "hit", "exploded"] as const),
     slot: Math.floor(rnd() * 8),
     x: between(0, 1280),
     y: between(0, 720),
   })),
 });
 
-const close = (a, b, tol, label) => assert.ok(Math.abs(a - b) <= tol, `${label}: ${a} vs ${b}`);
+const SELF_FIELDS = [
+  "x",
+  "y",
+  "vx",
+  "vy",
+  "angle",
+  "cooldown",
+  "rapid",
+  "homingAmmo",
+  "shield",
+  "invuln",
+] as const;
+
+const close = (a: number, b: number, tol: number, label: string): void =>
+  assert.ok(Math.abs(a - b) <= tol, `${label}: ${a} vs ${b}`);
 
 test("binary input: round trip, 12 bytes, turn quantized to 1/127", () => {
   for (let i = 0; i < 500; i++) {
-    const cmd = {
+    const cmd = command({
       seq: Math.floor(rnd() * 2 ** 32),
       tick: Math.floor(rnd() * 2 ** 32),
       thrust: rnd() < 0.5,
       fire: rnd() < 0.5,
       turn: between(-1, 1),
-    };
+    });
     const bytes = binary.encodeInput(cmd);
     assert.equal(bytes.byteLength, 12);
     const back = binary.decodeInput(bytes);
@@ -96,8 +125,9 @@ test("binary input: round trip, 12 bytes, turn quantized to 1/127", () => {
   }
   for (const turn of [-1, 0, 1])
     assert.equal(
-      binary.decodeInput(binary.encodeInput({ seq: 1, tick: 1, thrust: false, fire: false, turn }))
-        .turn,
+      binary.decodeInput(
+        binary.encodeInput(command({ seq: 1, tick: 1, thrust: false, fire: false, turn })),
+      ).turn,
       turn,
     );
 });
@@ -116,37 +146,34 @@ test("binary snapshot: decode(encode(x)) equals x within quantization", () => {
       14 + (snap.self ? 41 : 0) + 18 * snap.entities.length + 10 * snap.events.length,
     );
     if (snap.self) {
-      for (const f of [
-        "x",
-        "y",
-        "vx",
-        "vy",
-        "angle",
-        "cooldown",
-        "rapid",
-        "homingAmmo",
-        "shield",
-        "invuln",
-      ])
-        close(back.self[f], snap.self[f], Math.abs(snap.self[f]) * 1.2e-7 + 1e-30, `self.${f}`);
-      assert.equal(back.self.hp, snap.self.hp);
-      assert.equal(back.self.thrust, snap.self.thrust);
+      const want = snap.self;
+      const got = back.self;
+      assert.ok(got, "self survives the round trip");
+      for (const f of SELF_FIELDS)
+        close(got[f], want[f], Math.abs(want[f]) * 1.2e-7 + 1e-30, `self.${f}`);
+      assert.equal(got.hp, want.hp);
+      assert.equal(got.thrust, want.thrust);
     } else assert.equal(back.self, null);
     snap.entities.forEach((e, i) => {
       const d = back.entities[i];
+      assert.ok(d, `entity ${i} decoded`);
       assert.equal(d.kind, e.kind);
       assert.equal(d.id, e.id);
       close(d.x, e.x, 1.3e-4, "x");
       close(d.y, e.y, 1.3e-4, "y");
       close(d.angle, wrapAngle(e.angle), 0.0005 + 1e-9, "angle"); // quantization: 1 milliradian steps
-      for (const key of Object.keys(e))
+      const got: Record<string, unknown> = d;
+      const want: Record<string, unknown> = e;
+      for (const key of Object.keys(want))
         if (!["x", "y", "angle"].includes(key))
-          assert.deepEqual(d[key], e[key], `${e.kind}.${key}`);
+          assert.deepEqual(got[key], want[key], `${e.kind}.${key}`);
     });
     snap.events.forEach((ev, i) => {
-      assert.equal(back.events[i].type, ev.type);
-      assert.equal(back.events[i].slot, ev.slot);
-      close(back.events[i].x, ev.x, 1.3e-4, "event x");
+      const d = back.events[i];
+      assert.ok(d, `event ${i} decoded`);
+      assert.equal(d.type, ev.type);
+      assert.equal(d.slot, ev.slot);
+      close(d.x, ev.x, 1.3e-4, "event x");
     });
   }
 });
@@ -157,13 +184,14 @@ test("angle quantization: 1 milliradian steps (0.057 degrees), worst error 0.000
     const a = between(-Math.PI, Math.PI);
     const back = binary.decodeSnapshot(
       binary.encodeSnapshot({
-        tick: 0,
-        ack: 0,
+        tick: asTick(0),
+        ack: asSeq(0),
         self: null,
         events: [],
         entities: [{ id: 1, kind: "asteroid", x: 0, y: 0, angle: a, radius: 28, hunter: false }],
       }),
-    ).entities[0].angle;
+    ).entities[0]?.angle;
+    assert.ok(back !== undefined);
     worst = Math.max(worst, Math.abs(back - a));
   }
   assert.ok(worst <= 0.0005 + 1e-9, `worst error ${worst}`);
@@ -175,12 +203,12 @@ test("JSON codec: exact round trip, same model", () => {
     json.decodeSnapshot(json.encodeSnapshot(snap)),
     JSON.parse(JSON.stringify(snap)),
   );
-  const cmd = { seq: 5, tick: 9, thrust: true, fire: false, turn: -1 };
+  const cmd = command({ seq: 5, tick: 9, thrust: true, fire: false, turn: -1 });
   assert.deepEqual(json.decodeInput(json.encodeInput(cmd)), cmd);
 });
 
 test("decoders reject garbage with CodecError and never crash (untrusted input)", () => {
-  const good = binary.encodeInput({ seq: 1, tick: 1, thrust: true, fire: false, turn: 0 });
+  const good = binary.encodeInput(command({ seq: 1, tick: 1, thrust: true, fire: false, turn: 0 }));
   for (const bad of [
     new Uint8Array(0),
     new Uint8Array(1),
@@ -198,9 +226,9 @@ test("decoders reject garbage with CodecError and never crash (untrusted input)"
   // fuzz: random bytes must either decode or throw CodecError, nothing else
   for (let i = 0; i < 2000; i++) {
     const junk = Uint8Array.from({ length: Math.floor(rnd() * 80) }, () => Math.floor(rnd() * 256));
-    for (const f of [binary.decodeInput, binary.decodeSnapshot]) {
+    for (const decode of [binary.decodeInput, binary.decodeSnapshot]) {
       try {
-        f(junk);
+        decode(junk);
       } catch (e) {
         assert.ok(e instanceof CodecError, String(e));
       }
@@ -210,10 +238,20 @@ test("decoders reject garbage with CodecError and never crash (untrusted input)"
     assert.throws(() => json.decodeInput(bad), CodecError);
 });
 
-test("validateInput: a turn of 1000 is rejected, not clamped", () => {
+test("a binary snapshot with a NaN or infinite float is rejected (range check)", () => {
+  const snap = randomSnapshot();
+  snap.entities.push({ id: 1, kind: "asteroid", x: 1, y: 2, angle: 0, radius: 28, hunter: false });
+  const bytes = binary.encodeSnapshot({ ...snap, self: null });
+  // the last entity sits right before the events: poison its x
+  const at = 14 + 18 * (snap.entities.length - 1) + 4;
+  new DataView(bytes.buffer).setFloat32(at, Number.POSITIVE_INFINITY, true);
+  assert.throws(() => binary.decodeSnapshot(bytes), CodecError);
+});
+
+test("parseInputCommand: a turn of 1000 is rejected, not clamped", () => {
   const ok = { seq: 1, tick: 0, thrust: true, turn: 1, fire: false };
-  assert.equal(validateInput(ok).ok, true);
-  for (const bad of [
+  assert.equal(parseInputCommand(ok).ok, true);
+  const bad: unknown[] = [
     { ...ok, turn: 1000 },
     { ...ok, turn: NaN },
     { ...ok, turn: "1" },
@@ -223,7 +261,13 @@ test("validateInput: a turn of 1000 is rejected, not clamped", () => {
     { ...ok, fire: "yes" },
     null,
     5,
-  ]) {
-    assert.equal(validateInput(bad).ok, false, JSON.stringify(bad));
-  }
+  ];
+  for (const b of bad) assert.equal(parseInputCommand(b).ok, false, JSON.stringify(b));
+});
+
+test("what stops a client sending { type: 'input', turn: 1e9 }? The schema, at the boundary", () => {
+  const msg = { v: 1, type: "input", seq: 1, tick: 0, thrust: true, turn: 1e9, fire: false };
+  const r = parseClientMessage(msg);
+  assert.equal(r.ok, false);
+  assert.equal(parseClientMessage({ ...msg, turn: 1 }).ok, true);
 });

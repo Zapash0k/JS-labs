@@ -1,6 +1,8 @@
+export type Rng = () => number;
+
 // mulberry32: tiny seeded PRNG. Same seed -> same sequence on every machine, so the server can
 // send a seed and the simulation stays reproducible. (Math.random is not allowed inside the sim.)
-export function mulberry32(seed) {
+export function mulberry32(seed: number): Rng {
   let a = seed >>> 0;
   return function rng() {
     a = (a + 0x6d2b79f5) >>> 0;

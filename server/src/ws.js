@@ -2,8 +2,8 @@
 // slow-client policy, and an "error" listener on every socket.
 import { WebSocketServer, WebSocket } from "ws";
 import { getCodec, CodecError } from "@dogfight/shared/codec/index.js";
-import { NO_SLOT, TICK_HZ, WORLD_SIZE } from "@dogfight/shared/protocol.js";
-import { CLOSE, encode, validate } from "./protocol.js";
+import { NO_SLOT, TICK_HZ, WORLD_SIZE, parseClientMessage } from "@dogfight/shared/protocol.js";
+import { CLOSE, encode } from "./protocol.js";
 import { NetSim } from "./netsim.js";
 import { TokenBucket } from "./ratelimit.js";
 import { RoomLimitError, newPlayerId } from "./rooms.js";
@@ -126,13 +126,13 @@ export function attachWebSocket({ server, rooms, config, log = console }) {
           return fail(CLOSE.PROTOCOL, "message is not valid JSON");
         }
       }
-      const checked = validate(raw);
+      const checked = parseClientMessage(raw);
       // 2. abuse limits: inputs have their own bucket (about 30 per second are normal)
-      const isInput = checked.ok && checked.msg.type === "input";
+      const isInput = checked.ok && checked.value.type === "input";
       if (rateLimited(isInput ? "input" : "message"))
         return fail(CLOSE.POLICY, "rate limit exceeded");
       if (!checked.ok) return fail(CLOSE.PROTOCOL, checked.reason);
-      const { msg } = checked;
+      const msg = checked.value;
 
       // 3. latency injector (inbound direction): the message takes effect after the simulated delay
       if (isInput && session.netsim.shouldDrop()) return;

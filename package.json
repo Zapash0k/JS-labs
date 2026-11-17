@@ -9,7 +9,7 @@
     "server"
   ],
   "engines": {
-    "node": ">=22"
+    "node": ">=22.18"
   },
   "scripts": {
     "dev": "node scripts/dev.mjs",
@@ -20,12 +20,15 @@
     "test": "npm test -w shared && npm test -w server",
     "smoke": "npm run smoke -w client",
     "lint": "eslint .",
+    "typecheck": "npm run typecheck --workspaces --if-present",
     "format": "prettier --write ."
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@types/node": "^26.6.6",
     "eslint": "^10.14.0",
     "globals": "^17.14.0",
-    "prettier": "^3.9.10"
+    "prettier": "^3.9.10",
+    "typescript": "^7.0.2"
   }
 }

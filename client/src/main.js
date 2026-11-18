@@ -301,6 +301,9 @@ function startNetGame(connection, joinedMsg, room, name) {
     world: joinedMsg.world ?? WORLD_SIZE,
     tickHz: joinedMsg.tickRate,
   });
+  // Test hook for the Playwright e2e (e2e/): read access to the net game, only when the URL has ?e2e.
+  // The other ship is drawn on a canvas, so a test cannot read its position from the page otherwise.
+  if (params.has("e2e")) window.__dogfight = { getNetGame: () => netGame };
   const life = new AbortController();
   audio?.attach(netGame.events, life.signal);
   const page = new URLSearchParams(location.search);

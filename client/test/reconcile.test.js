@@ -12,7 +12,13 @@ const keys = (...down) => ({ isDown: (code) => down.includes(code) });
 const FLY = keys("ArrowUp", "ArrowRight");
 
 const self = (over = {}) => ({ ...createShipState(400, 300), hp: 100, ...over });
-const snapshot = (tick, ack, selfState) => ({ tick, ack, self: selfState, entities: [], events: [] });
+const snapshot = (tick, ack, selfState) => ({
+  tick,
+  ack,
+  self: selfState,
+  entities: [],
+  events: [],
+});
 
 let conn;
 let game;

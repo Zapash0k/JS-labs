@@ -113,7 +113,7 @@ describe("stepShipState (the one place a ship moves)", () => {
     const a = createShipState(5, 5);
     const b = createShipState(5, 5);
     for (let i = 0; i < 500; i++) {
-      const c = cmd({ thrust: i % 3 !== 0, turn: ((i % 3) - 1) as -1 | 0 | 1, fire: i % 7 === 0 });
+      const c = cmd({ thrust: i % 3 !== 0, turn: (i % 3) - 1, fire: i % 7 === 0 });
       stepShipState(a, c, DT, 1280, 720);
       stepShipState(b, c, DT, 1280, 720);
     }

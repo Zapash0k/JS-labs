@@ -1,6 +1,6 @@
 // The browser-side Connection wrapper (client/src/net/connection.js) against the real server.
 // Node 22 ships a global WebSocket with the same API as the browser's.
-import { test } from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { Connection } from "../../client/src/net/connection.js";
 import { once } from "../../client/src/events.js";

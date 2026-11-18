@@ -1,4 +1,4 @@
-import { test } from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { parseClientMessage } from "../src/protocol.ts";
 import type { ClientMessage } from "../src/protocol.ts";

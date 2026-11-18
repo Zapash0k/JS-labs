@@ -8,7 +8,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "determinism": "node scripts/determinism.mjs",
-    "smoke": "node scripts/smoke.mjs && node scripts/smoke-assets.mjs"
+    "smoke": "node scripts/smoke.mjs && node scripts/smoke-assets.mjs",
+    "test": "vitest run --root .. --project client"
   },
   "devDependencies": {
     "vite": "^8.3.5"

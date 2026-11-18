@@ -9,7 +9,7 @@
   "scripts": {
     "dev": "node --watch --env-file-if-exists=.env src/index.js",
     "start": "node --env-file-if-exists=.env src/index.js",
-    "test": "node --test --test-reporter=spec \"test/*.test.js\""
+    "test": "vitest run --root .. --project server"
   },
   "dependencies": {
     "ws": "^8.18.0",

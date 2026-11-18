@@ -1,4 +1,4 @@
-import { test } from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { codecs } from "@dogfight/shared/codec/index.js";
 import { stepShipState } from "@dogfight/shared/sim/shipPhysics.js";

@@ -1,12 +1,12 @@
-import { test, before, after } from "node:test";
+import { test, beforeAll, afterAll } from "vitest";
 import assert from "node:assert/strict";
 import net from "node:net";
 import { startServer } from "./helpers.js";
 import { resolveSafe } from "../src/static.js";
 
 let s;
-before(async () => (s = await startServer({ MAX_BODY_BYTES: "256" })));
-after(() => s.close());
+beforeAll(async () => (s = await startServer({ MAX_BODY_BYTES: "256" })));
+afterAll(() => s.close());
 
 const post = (path, body, headers = { "Content-Type": "application/json" }) =>
   fetch(s.url + path, {

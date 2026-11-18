@@ -1,6 +1,6 @@
 // Headless netcode tests: the real client logic (client/src/net) against the real server with injected latency.
 // Each "bot" is a Connection + NetGame stepping at 30 Hz with a scripted keyboard.
-import { test } from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { TICK_DT } from "@dogfight/shared/protocol.js";
 import { Connection } from "../../client/src/net/connection.js";

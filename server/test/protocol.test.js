@@ -1,4 +1,4 @@
-import { test } from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { parseClientMessage } from "@dogfight/shared/protocol.js";
 import { slugify, isRoomId, isPlayerName } from "../src/protocol.js";

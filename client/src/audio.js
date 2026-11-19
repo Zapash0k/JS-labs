@@ -13,10 +13,11 @@ export function createAudio({ volume = 0.4 } = {}) {
 
   // Browsers only let an AudioContext run after a user gesture: resume on the first click/key.
   const gesture = new AbortController();
-  const unlock = async () => {
+  const resumeAudio = async () => {
     if (ctx.state !== "running") await ctx.resume().catch(() => {});
     if (ctx.state === "running") gesture.abort();
   };
+  const unlock = () => void resumeAudio(); // an event listener cannot wait for a promise; resume() errors are caught above
   for (const type of ["pointerdown", "keydown"]) {
     window.addEventListener(type, unlock, { signal: gesture.signal });
   }

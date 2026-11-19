@@ -12,7 +12,7 @@
     "./codec/*.js": "./src/codec/*.ts"
   },
   "scripts": {
-    "test": "node --test --test-reporter=spec \"test/*.test.ts\"",
+    "test": "vitest run --root .. --project shared",
     "typecheck": "tsc --noEmit -p .",
     "hash": "node scripts/hash.mjs"
   },

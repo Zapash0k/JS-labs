@@ -68,26 +68,25 @@ export function mountLobbyView(root, lobby) {
     status.textContent = text;
   };
 
-  create.addEventListener(
-    "click",
-    async () => {
-      const wanted = newName.value.trim();
-      if (!wanted) return;
-      try {
-        await lobby.createRoom(wanted);
-        newName.value = "";
-      } catch (err) {
-        const reason =
-          err instanceof HttpError && err.status === 409
-            ? "that name is taken"
-            : err instanceof HttpError && err.status === 422
-              ? "invalid room name"
-              : err.message;
-        setStatus(`Cannot create the room: ${reason}`, true);
-      }
-    },
-    { signal },
-  );
+  async function createRoom() {
+    const wanted = newName.value.trim();
+    if (!wanted) return;
+    try {
+      await lobby.createRoom(wanted);
+      newName.value = "";
+    } catch (err) {
+      const reason =
+        err instanceof HttpError && err.status === 409
+          ? "that name is taken"
+          : err instanceof HttpError && err.status === 422
+            ? "invalid room name"
+            : err.message;
+      setStatus(`Cannot create the room: ${reason}`, true);
+    }
+  }
+
+  // An event listener cannot wait for a promise; createRoom() reports every failure on screen itself.
+  create.addEventListener("click", () => void createRoom(), { signal });
 
   return {
     setStatus,

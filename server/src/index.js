@@ -20,18 +20,18 @@ console.log(
 if (config.demo) console.warn("DEMO_ENDPOINTS is on: /api/slow blocks the event loop on purpose");
 
 let stopping = false;
-for (const signal of ["SIGINT", "SIGTERM"]) {
-  process.on(signal, async () => {
-    if (stopping) return;
-    stopping = true;
-    console.log(`${signal}: shutting down...`);
-    try {
-      await app.close();
-      console.log("bye");
-      process.exit(0);
-    } catch (err) {
-      console.error("shutdown failed:", err);
-      process.exit(1);
-    }
-  });
+async function shutdown(signal) {
+  if (stopping) return;
+  stopping = true;
+  console.log(`${signal}: shutting down...`);
+  try {
+    await app.close();
+    console.log("bye");
+    process.exit(0);
+  } catch (err) {
+    console.error("shutdown failed:", err);
+    process.exit(1);
+  }
 }
+// A signal listener cannot wait for a promise; shutdown() handles every failure itself and exits.
+for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => void shutdown(signal));

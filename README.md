@@ -1,5 +1,7 @@
 # Dogfight — Lab 03: Asynchronous JavaScript
 
+[![CI](https://github.com/Zapash0k/JS-labs/actions/workflows/ci.yml/badge.svg)](https://github.com/Zapash0k/JS-labs/actions/workflows/ci.yml)
+
 A ship you fly and shoot on a canvas, driven by a fixed-timestep simulation (60 steps/s) and rendered
 with interpolation. Lab 01 (loop, input, experiments) and Lab 02 (entity model) are unchanged; Lab 03 adds an
 asset pipeline with a loading screen, sprites and sound, and an HTTP lobby.

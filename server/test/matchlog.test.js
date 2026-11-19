@@ -1,4 +1,4 @@
-import { test } from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { appendFile, readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -25,7 +25,7 @@ test("NdjsonEncode: objects in, one line each out; a bad object fails the stream
   );
 });
 
-test("readEvents handles lines and multi-byte characters across chunk boundaries", async (t) => {
+test("readEvents handles lines and multi-byte characters across chunk boundaries", async () => {
   const { mkdtemp } = await import("node:fs/promises");
   const { tmpdir } = await import("node:os");
   const dir = await mkdtemp(join(tmpdir(), "replay-"));
@@ -41,7 +41,7 @@ test("readEvents handles lines and multi-byte characters across chunk boundaries
   await assert.rejects(async () => {
     for await (const e of readEvents(file)) void e;
   }, /invalid JSON on line 5001/);
-  t.diagnostic(`file size ${(await readFile(file)).length} bytes`);
+  console.info(`file size ${(await readFile(file)).length} bytes`);
 });
 
 test("replayPath only accepts plain ids", () => {

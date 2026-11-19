@@ -98,7 +98,7 @@ function parseNewRoom(body, config) {
   return out;
 }
 
-export function createHttpHandler({ config, rooms, getStats, getMatches = () => [] }) {
+export function createHttpHandler({ config, rooms, bots = null, getStats, getMatches = () => [] }) {
   async function route(req, res, url) {
     const { pathname } = url;
 
@@ -135,6 +135,34 @@ export function createHttpHandler({ config, rooms, getStats, getMatches = () => 
         }
       }
       res.setHeader("Allow", "GET, POST");
+      throw new HttpError(405, "method not allowed");
+    }
+
+    // ---- server-side AI players (Lab 07); BOTS=0 removes the endpoint ----
+    const botRoute = bots && config.bots ? /^\/api\/rooms\/([^/]+)\/bots$/.exec(pathname) : null;
+    if (botRoute) {
+      const room = rooms.get(botRoute[1]);
+      if (!room) throw new HttpError(404, "no such room");
+      if (req.method === "POST") {
+        const body = await readJson(req, config.maxBodyBytes);
+        if (typeof body !== "object" || body === null || Array.isArray(body))
+          throw new HttpError(422, "body must be an object");
+        const count = body.count === undefined ? 1 : body.count; // only a MISSING count defaults to one
+        if (!Number.isInteger(count) || count < 1 || count > config.maxPlayersPerRoom)
+          throw new HttpError(422, `count must be an integer in 1..${config.maxPlayersPerRoom}`);
+        const free = room.maxPlayers - room.size;
+        if (count > free) throw new HttpError(409, `room has ${free} free slots`);
+        const added = bots.add(room, count);
+        return sendJson(res, 201, {
+          added: added.map(({ id, name, slot }) => ({ id, name, slot })),
+          bots: bots.count(room),
+        });
+      }
+      if (req.method === "DELETE") {
+        const removed = bots.removeAll(room);
+        return sendJson(res, 200, { removed, bots: 0 });
+      }
+      res.setHeader("Allow", "POST, DELETE");
       throw new HttpError(405, "method not allowed");
     }
 

@@ -1,0 +1,12 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    // Plain JavaScript, so there is nothing to emit and nothing is type-checked (checkJs is off).
+    // The project exists so typescript-eslint can read types for the promise rules (no-floating-promises).
+    "allowJs": true,
+    "checkJs": false,
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "types": ["node"]
+  },
+  "include": ["src", "test", "scripts", "vite.config.js"]
+}

@@ -1,4 +1,5 @@
 import http from "node:http";
+import { BotManager } from "./bot.js";
 import { createHttpHandler } from "./http.js";
 import { startMatchLog } from "./log/matchlog.js";
 import { CLOSE } from "./protocol.js";
@@ -39,24 +40,31 @@ export function createApp(config, { log = console } = {}) {
       onError: (err) => log.error("[matchlog]", err),
     });
     pending.add(done);
-    done.finally(() => pending.delete(done));
+    void done.finally(() => pending.delete(done)); // `done` never rejects (see startMatchLog)
   });
 
   const server = http.createServer();
   const wss = attachWebSocket({ server, rooms, config, log });
-  server.on(
-    "request",
-    createHttpHandler({
-      config,
-      rooms,
-      getStats: () => ({ connections: wss.clients.size }),
-      getMatches: () =>
-        rooms
-          .list()
-          .filter((r) => r.match?.running)
-          .map((r) => r.match.stats()),
-    }),
-  );
+  const bots = new BotManager({ log });
+  const handleRequest = createHttpHandler({
+    config,
+    rooms,
+    bots,
+    getStats: () => ({ connections: wss.clients.size }),
+    getMatches: () =>
+      rooms
+        .list()
+        .filter((r) => r.match?.running)
+        .map((r) => r.match.stats()),
+  });
+  server.on("request", (req, res) => {
+    // The handler answers its own errors; this is the last safety net, so that a failure while
+    // sending an error reply drops that one connection instead of crashing the whole server.
+    handleRequest(req, res).catch((err) => {
+      log.error("[http] request handler failed:", err);
+      res.destroy();
+    });
+  });
 
   for (const { id, ...opts } of DEFAULT_ROOMS) rooms.create(id, { ...opts, persistent: true });
 

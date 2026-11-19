@@ -1,0 +1,1994 @@
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+new file mode 100644
+index 0000000..267a830
+--- /dev/null
++++ b/.github/workflows/ci.yml
+@@ -0,0 +1,57 @@
++name: CI
++
++# Every push to main and every pull request: typecheck -> lint -> unit tests -> build -> end-to-end.
++on:
++  push:
++    branches: [main]
++  pull_request:
++
++permissions:
++  contents: read
++
++# A newer push to the same branch makes the older run pointless.
++concurrency:
++  group: ci-${{ github.ref }}
++  cancel-in-progress: true
++
++jobs:
++  ci:
++    runs-on: ubuntu-latest
++    timeout-minutes: 15
++    steps:
++      - uses: actions/checkout@v5
++
++      - uses: actions/setup-node@v5
++        with:
++          node-version-file: .nvmrc
++          cache: npm # keyed by package-lock.json
++
++      - run: npm ci
++
++      - name: Typecheck
++        run: npm run typecheck
++
++      - name: Lint
++        run: npm run lint
++
++      - name: Unit and property tests (Vitest)
++        run: npm test
++
++      - name: Build the client
++        run: npm run build
++
++      - name: Install Playwright's Chromium
++        run: npx playwright install --with-deps chromium
++
++      - name: End-to-end tests (Playwright, two browsers)
++        run: npm run e2e
++
++      - name: Keep the Playwright report when something failed
++        if: failure()
++        uses: actions/upload-artifact@v4
++        with:
++          name: playwright-report
++          path: |
++            playwright-report/
++            test-results/
++          retention-days: 7
+diff --git a/.gitignore b/.gitignore
+index 860a7be..a0dcde5 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -4,3 +4,5 @@ dist
+ .DS_Store
+ .env
+ server/logs/
++playwright-report/
++test-results/
+diff --git a/README.md b/README.md
+index b398fba..7ac3519 100644
+--- a/README.md
++++ b/README.md
+@@ -1,5 +1,7 @@
+ # Dogfight — Lab 03: Asynchronous JavaScript
+ 
++[![CI](https://github.com/Zapash0k/JS-labs/actions/workflows/ci.yml/badge.svg)](https://github.com/Zapash0k/JS-labs/actions/workflows/ci.yml)
++
+ A ship you fly and shoot on a canvas, driven by a fixed-timestep simulation (60 steps/s) and rendered
+ with interpolation. Lab 01 (loop, input, experiments) and Lab 02 (entity model) are unchanged; Lab 03 adds an
+ asset pipeline with a loading screen, sprites and sound, and an HTTP lobby.
+diff --git a/client/src/audio.js b/client/src/audio.js
+index 1ff626e..1933a24 100644
+--- a/client/src/audio.js
++++ b/client/src/audio.js
+@@ -13,10 +13,11 @@ export function createAudio({ volume = 0.4 } = {}) {
+ 
+   // Browsers only let an AudioContext run after a user gesture: resume on the first click/key.
+   const gesture = new AbortController();
+-  const unlock = async () => {
++  const resumeAudio = async () => {
+     if (ctx.state !== "running") await ctx.resume().catch(() => {});
+     if (ctx.state === "running") gesture.abort();
+   };
++  const unlock = () => void resumeAudio(); // an event listener cannot wait for a promise; resume() errors are caught above
+   for (const type of ["pointerdown", "keydown"]) {
+     window.addEventListener(type, unlock, { signal: gesture.signal });
+   }
+diff --git a/client/src/lobby/lobby.js b/client/src/lobby/lobby.js
+index 8489317..7d6ac4d 100644
+--- a/client/src/lobby/lobby.js
++++ b/client/src/lobby/lobby.js
+@@ -26,8 +26,8 @@ export class Lobby extends EventTarget {
+   enter() {
+     if (this.#life) return;
+     this.#life = new AbortController();
+-    this.refresh();
+-    this.#timer = setInterval(() => this.refresh(), this.#opts.intervalMs);
++    void this.refresh(); // refresh() reports failures as a "failed" event and never rejects
++    this.#timer = setInterval(() => void this.refresh(), this.#opts.intervalMs);
+   }
+ 
+   /** The player left: stop the timer and cancel any request still in flight. */
+diff --git a/client/src/lobby/lobbyView.js b/client/src/lobby/lobbyView.js
+index 4444e1c..3d4b6c4 100644
+--- a/client/src/lobby/lobbyView.js
++++ b/client/src/lobby/lobbyView.js
+@@ -68,26 +68,25 @@ export function mountLobbyView(root, lobby) {
+     status.textContent = text;
+   };
+ 
+-  create.addEventListener(
+-    "click",
+-    async () => {
+-      const wanted = newName.value.trim();
+-      if (!wanted) return;
+-      try {
+-        await lobby.createRoom(wanted);
+-        newName.value = "";
+-      } catch (err) {
+-        const reason =
+-          err instanceof HttpError && err.status === 409
+-            ? "that name is taken"
+-            : err instanceof HttpError && err.status === 422
+-              ? "invalid room name"
+-              : err.message;
+-        setStatus(`Cannot create the room: ${reason}`, true);
+-      }
+-    },
+-    { signal },
+-  );
++  async function createRoom() {
++    const wanted = newName.value.trim();
++    if (!wanted) return;
++    try {
++      await lobby.createRoom(wanted);
++      newName.value = "";
++    } catch (err) {
++      const reason =
++        err instanceof HttpError && err.status === 409
++          ? "that name is taken"
++          : err instanceof HttpError && err.status === 422
++            ? "invalid room name"
++            : err.message;
++      setStatus(`Cannot create the room: ${reason}`, true);
++    }
++  }
++
++  // An event listener cannot wait for a promise; createRoom() reports every failure on screen itself.
++  create.addEventListener("click", () => void createRoom(), { signal });
+ 
+   return {
+     setStatus,
+diff --git a/client/src/main.js b/client/src/main.js
+index 4b5fa86..b149f13 100644
+--- a/client/src/main.js
++++ b/client/src/main.js
+@@ -301,6 +301,9 @@ function startNetGame(connection, joinedMsg, room, name) {
+     world: joinedMsg.world ?? WORLD_SIZE,
+     tickHz: joinedMsg.tickRate,
+   });
++  // Test hook for the Playwright e2e (e2e/): read access to the net game, only when the URL has ?e2e.
++  // The other ship is drawn on a canvas, so a test cannot read its position from the page otherwise.
++  if (params.has("e2e")) window.__dogfight = { getNetGame: () => netGame };
+   const life = new AbortController();
+   audio?.attach(netGame.events, life.signal);
+   const page = new URLSearchParams(location.search);
+diff --git a/client/test/reconcile.test.js b/client/test/reconcile.test.js
+index fbdac76..f13268f 100644
+--- a/client/test/reconcile.test.js
++++ b/client/test/reconcile.test.js
+@@ -12,7 +12,13 @@ const keys = (...down) => ({ isDown: (code) => down.includes(code) });
+ const FLY = keys("ArrowUp", "ArrowRight");
+ 
+ const self = (over = {}) => ({ ...createShipState(400, 300), hp: 100, ...over });
+-const snapshot = (tick, ack, selfState) => ({ tick, ack, self: selfState, entities: [], events: [] });
++const snapshot = (tick, ack, selfState) => ({
++  tick,
++  ack,
++  self: selfState,
++  entities: [],
++  events: [],
++});
+ 
+ let conn;
+ let game;
+diff --git a/client/tsconfig.json b/client/tsconfig.json
+new file mode 100644
+index 0000000..50f718d
+--- /dev/null
++++ b/client/tsconfig.json
+@@ -0,0 +1,12 @@
++{
++  "extends": "../tsconfig.base.json",
++  "compilerOptions": {
++    // Plain JavaScript, so there is nothing to emit and nothing is type-checked (checkJs is off).
++    // The project exists so typescript-eslint can read types for the promise rules (no-floating-promises).
++    "allowJs": true,
++    "checkJs": false,
++    "lib": ["ES2023", "DOM", "DOM.Iterable"],
++    "types": ["node"]
++  },
++  "include": ["src", "test", "scripts", "vite.config.js"]
++}
+diff --git a/e2e/two-players.spec.ts b/e2e/two-players.spec.ts
+new file mode 100644
+index 0000000..96887d2
+--- /dev/null
++++ b/e2e/two-players.spec.ts
+@@ -0,0 +1,113 @@
++import { expect, test } from "@playwright/test";
++import type { Browser, BrowserContext, Page } from "@playwright/test";
++
++// Two real browsers, one real server. This is the most convincing test in the repo: client, protocol,
++// server and simulation all have to work together for any of it to pass.
++
++/** The movement must show up in the other browser within this long after the key goes down. */
++const MOVEMENT_BUDGET_MS = 500;
++
++interface Point {
++  x: number;
++  y: number;
++}
++interface Drawable {
++  kind: string;
++  own?: boolean;
++  pos: Point;
++}
++declare global {
++  interface Window {
++    // set by client/src/main.js when the URL has ?e2e
++    __dogfight?: { getNetGame(): { drawables(alpha?: number): Drawable[] } | null };
++  }
++}
++
++/** Where this page draws the OTHER player's ship right now (null: not on screen yet). */
++const otherShip = (page: Page): Promise<Point | null> =>
++  page.evaluate(() => {
++    const ships = window.__dogfight?.getNetGame()?.drawables(1) ?? [];
++    const other = ships.find((d) => d.kind === "ship" && !d.own);
++    return other ? { x: other.pos.x, y: other.pos.y } : null;
++  });
++
++const distance = (a: Point, b: Point): number => Math.hypot(a.x - b.x, a.y - b.y);
++
++/** Creates a fresh room over HTTP, so every test starts from its own empty room. */
++async function createRoom(page: Page): Promise<string> {
++  const name = `e2e-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
++  const res = await page.request.post("/api/rooms", { data: { name } });
++  expect(res.status()).toBe(201);
++  return ((await res.json()) as { id: string }).id;
++}
++
++async function joinRoom(page: Page, roomId: string, callsign: string): Promise<void> {
++  await page.goto("/?e2e");
++  await page.locator("#lobby label input").fill(callsign);
++  await page.locator(`#lobby button[data-room="${roomId}"]`).click();
++  await expect(page.locator("#chat")).toBeVisible(); // the chat overlay appears once the server said "joined"
++}
++
++interface Pair {
++  alice: Page;
++  bob: Page;
++}
++
++/** Two separate browser contexts (two players, no shared storage) in the same room. */
++async function withTwoPlayers(browser: Browser, run: (pair: Pair) => Promise<void>): Promise<void> {
++  const contexts: BrowserContext[] = [await browser.newContext(), await browser.newContext()];
++  try {
++    const [alice, bob] = await Promise.all(contexts.map((c) => c.newPage()));
++    if (!alice || !bob) throw new Error("could not open two pages");
++    const roomId = await createRoom(alice);
++    await joinRoom(alice, roomId, "Alice");
++    await joinRoom(bob, roomId, "Bob");
++    await run({ alice, bob });
++  } finally {
++    await Promise.all(contexts.map((c) => c.close()));
++  }
++}
++
++test("both players join one room and see the same roster", async ({ browser }) => {
++  await withTwoPlayers(browser, async ({ alice, bob }) => {
++    for (const page of [alice, bob]) {
++      const roster = page.locator("#chat .roster");
++      await expect(roster).toContainText("2 in room");
++      await expect(roster).toContainText("Alice");
++      await expect(roster).toContainText("Bob");
++    }
++  });
++});
++
++test("a chat message from one player reaches the other", async ({ browser }) => {
++  await withTwoPlayers(browser, async ({ alice, bob }) => {
++    const box = alice.locator("#chat input");
++    await box.fill("hello from alice");
++    await box.press("Enter");
++    await expect(bob.locator("#chat .log")).toContainText("Alice: hello from alice");
++    await expect(alice.locator("#chat .log")).toContainText("Alice: hello from alice"); // echoed to the sender too
++  });
++});
++
++test(`when Alice flies, Bob sees her ship move within ${MOVEMENT_BUDGET_MS} ms`, async ({
++  browser,
++}) => {
++  await withTwoPlayers(browser, async ({ alice, bob }) => {
++    // Bob needs Alice's ship on screen first. A ship without input does not advance, so it holds still.
++    await expect.poll(() => otherShip(bob), { timeout: 5000 }).not.toBeNull();
++    const before = await otherShip(bob);
++    if (!before) throw new Error("Bob cannot see Alice's ship");
++
++    const started = Date.now();
++    await alice.keyboard.down("ArrowUp"); // thrust
++    await expect
++      .poll(async () => distance(before, (await otherShip(bob)) ?? before), {
++        timeout: MOVEMENT_BUDGET_MS,
++        intervals: [20],
++        message: `Bob should see Alice's ship move within ${MOVEMENT_BUDGET_MS} ms`,
++      })
++      .toBeGreaterThan(3); // pixels
++    console.log(`movement became visible to the other player after ${Date.now() - started} ms`);
++    await alice.keyboard.up("ArrowUp");
++  });
++});
+diff --git a/eslint.config.js b/eslint.config.js
+index bddbb47..ff35d95 100644
+--- a/eslint.config.js
++++ b/eslint.config.js
+@@ -1,8 +1,23 @@
+ import js from "@eslint/js";
+ import globals from "globals";
++import tseslint from "typescript-eslint";
++import { defineConfig, globalIgnores } from "eslint/config";
+ 
+-export default [
+-  { ignores: ["**/dist/", "**/node_modules/", "server/logs/"] },
++// Type-aware rules need the TypeScript program. projectService finds the nearest tsconfig.json that
++// includes each file (client/, server/, shared/ and the root each have one).
++const typeAware = {
++  projectService: true,
++  tsconfigRootDir: import.meta.dirname,
++};
++
++export default defineConfig([
++  globalIgnores([
++    "**/dist/",
++    "**/node_modules/",
++    "server/logs/",
++    "playwright-report/",
++    "test-results/",
++  ]),
+   js.configs.recommended,
+   {
+     files: ["client/src/**/*.js"],
+@@ -16,6 +31,7 @@ export default [
+     files: [
+       "client/scripts/**/*.mjs",
+       "client/*.config.js",
++      "client/test/**/*.js", // Vitest runs these in Node, not in a browser
+       "server/**/*.js",
+       "shared/**/*.js",
+       "shared/**/*.mjs",
+@@ -29,4 +45,36 @@ export default [
+       globals: { ...globals.node },
+     },
+   },
+-];
++
++  // TypeScript (shared/, e2e/, tool configs): the full type-checked ruleset.
++  {
++    files: ["**/*.ts"],
++    extends: [tseslint.configs.recommendedTypeChecked],
++    languageOptions: { parserOptions: typeAware },
++    rules: {
++      "@typescript-eslint/no-floating-promises": "error",
++      // A leading underscore means "deliberately unused" (empty subclass hooks, `_exhaustive: never`).
++      "@typescript-eslint/no-unused-vars": [
++        "error",
++        { argsIgnorePattern: "^_", varsIgnorePattern: "^_", ignoreRestSiblings: true },
++      ],
++    },
++  },
++
++  // JavaScript (client/, server/): untyped code would drown the unsafe-any rules in noise, so only the
++  // rules about promises run here. They are the ones that catch real server bugs: a forgotten `await`
++  // or an un-handled rejection that crashes the process.
++  {
++    files: ["**/*.{js,mjs}"],
++    plugins: { "@typescript-eslint": tseslint.plugin },
++    languageOptions: {
++      parser: tseslint.parser,
++      parserOptions: { ...typeAware, sourceType: "module" },
++    },
++    rules: {
++      "@typescript-eslint/no-floating-promises": "error",
++      "@typescript-eslint/no-misused-promises": "error",
++      "@typescript-eslint/await-thenable": "error",
++    },
++  },
++]);
+diff --git a/package.json b/package.json
+index fc35265..cb248d3 100644
+--- a/package.json
++++ b/package.json
+@@ -23,17 +23,20 @@
+     "typecheck": "npm run typecheck --workspaces --if-present",
+     "format": "prettier --write .",
+     "test:watch": "vitest",
+-    "test:coverage": "vitest run --coverage"
++    "test:coverage": "vitest run --coverage",
++    "e2e": "playwright test"
+   },
+   "devDependencies": {
+     "@eslint/js": "^10.0.1",
++    "@playwright/test": "^1.65.1",
+     "@types/node": "^26.6.6",
+     "@vitest/coverage-v8": "^5.1.0",
+     "eslint": "^10.14.0",
+     "fast-check": "^4.10.2",
+     "globals": "^17.14.0",
+     "prettier": "^3.9.10",
+-    "typescript": "^7.0.2",
++    "typescript": "^6.0.3",
++    "typescript-eslint": "^8.73.0",
+     "vitest": "^5.1.0"
+   }
+ }
+diff --git a/playwright.config.ts b/playwright.config.ts
+new file mode 100644
+index 0000000..7100259
+--- /dev/null
++++ b/playwright.config.ts
+@@ -0,0 +1,36 @@
++import { defineConfig, devices } from "@playwright/test";
++
++// End-to-end tests (Lab 07, M2): a real browser against the real server, which also serves the built
++// client. `npm run e2e` builds the client, starts the server and runs e2e/*.spec.ts.
++//
++//   E2E_PORT=4200 npm run e2e     use another port
++//   E2E_CHANNEL=chrome npm run e2e   use the Chrome that is already installed instead of Playwright's
++//                                    own Chromium (handy where `playwright install` cannot download)
++const PORT = Number(process.env.E2E_PORT ?? 4173);
++
++export default defineConfig({
++  testDir: "./e2e",
++  // One worker: two canvases at 60 fps per test, and the movement test has a 500 ms latency budget.
++  workers: 1,
++  retries: process.env.CI ? 1 : 0,
++  reporter: process.env.CI ? [["list"], ["html", { open: "never" }]] : "list",
++  use: {
++    baseURL: `http://127.0.0.1:${PORT}`,
++    trace: "retain-on-failure",
++    screenshot: "only-on-failure",
++  },
++  projects: [
++    {
++      name: "chromium",
++      use: { ...devices["Desktop Chrome"], channel: process.env.E2E_CHANNEL },
++    },
++  ],
++  webServer: {
++    // CI builds in its own step first (see .github/workflows/ci.yml), so it only has to start the server.
++    command: process.env.CI ? "npm start" : "npm run build && npm start",
++    url: `http://127.0.0.1:${PORT}/health`,
++    reuseExistingServer: !process.env.CI,
++    timeout: 120_000,
++    env: { PORT: String(PORT), HOST: "127.0.0.1" },
++  },
++});
+diff --git a/server/README.md b/server/README.md
+index 1bdcc48..bed1b79 100644
+--- a/server/README.md
++++ b/server/README.md
+@@ -26,9 +26,10 @@ src/protocol.js     message types, close codes, validate()
+ src/ws.js           connection lifecycle: join deadline, validation, rate limit, heartbeat, slow clients
+ src/ratelimit.js    token bucket
+ src/log/matchlog.js room events -> object-mode Transform -> NDJSON file (pipeline)
++src/bot.js           AI players: decide() brain, Bot (a player), BotManager (POST /api/rooms/:id/bots)
+ src/log/replay.js   async generator over an NDJSON file; list of replays
+ scripts/            backpressure-demo.mjs, block-demo.mjs, crash-demo.mjs (experiments below)
+-test/               node:test suite
++test/               Vitest suite (bot.test.js, bots-api.test.js cover the bots)
+ ```
+ 
+ ## HTTP API
+@@ -42,9 +43,37 @@ test/               node:test suite
+ | `GET /api/replays/:id`  | the NDJSON file, **streamed** with `pipeline(createReadStream, res)`                                   |
+ | anything else under `/` | static file from `client/dist` (`403` for traversal, `404`, `503` if the client is not built)          |
+ 
++| `POST /api/rooms/:id/bots` | body `{ count? }` (1 to `MAX_PLAYERS_PER_ROOM`, default 1) → 201 `{ added: [{ id, name, slot }], bots }`, 404/409/415/422 |
++| `DELETE /api/rooms/:id/bots` | removes every bot from the room → `{ removed, bots: 0 }` |
++
+ Three rooms always exist (`open-space`, `rock-field`, `quiet-corner`). Rooms created by `POST` (or by a `join` to an
+ unknown id) are deleted when they become empty, or after `EMPTY_ROOM_TTL_MS` if nobody ever joins.
+ 
++### Bots (Lab 07, M4)
++
++`src/bot.js`. A bot is a **player**, not a special case: the match sends it binary snapshots through `player.send()` and
++it answers with one input per snapshot through `match.receiveInput()`. The input goes through
++`codec.encodeInput` → `codec.decodeInput` like a human's 12 bytes, so the match cannot tell a bot from a person.
++
++- **Brain** (`decide(snapshot, slot, options)`, pure and unit-tested): dodge a close asteroid → chase and shoot the
++  nearest other ship → shoot a nearby asteroid → wander. It aims the short way round the wrap-around arena, and
++  turns proportionally (no jitter). `options` (`fireArc`, `fireRange`, `standOff`, `dangerMargin`) tune it; a wide
++  `fireArc` makes a bot spray bullets, which is what you want for a "heavy shooting" profiling session.
++- **Thinking runs in `setImmediate`**, not inside `Match.tick()`, so `tickMs` in `/api/stats` measures the simulation
++  and not the bots. The bots still run in this process and cost event-loop time; for a clean capacity number use the
++  load test (separate WebSocket clients), not bots.
++- **A bug in a bot cannot crash the server**: its error is logged and that bot leaves the room.
++- **Bots keep playing when the last human leaves.** That is on purpose (a bots-only room is how you profile the server
++  with `--cpu-prof`), so remove them with `DELETE /api/rooms/:id/bots`. A non-persistent room is deleted once its last
++  bot is gone.
++- `BOTS=0` removes the endpoint. A room holds `MAX_PLAYERS_PER_ROOM` players (default 8) **including bots**, so for
++  8 bots plus yourself start the server with `MAX_PLAYERS_PER_ROOM=9` or more.
++
++```bash
++curl -X POST localhost:3000/api/rooms/open-space/bots -H 'Content-Type: application/json' -d '{"count":4}'
++curl -X DELETE localhost:3000/api/rooms/open-space/bots
++```
++
+ ## WebSocket protocol v1 (`/ws`)
+ 
+ Text frames, JSON, every message has `{ "v": 1, "type": ... }`. The server validates every incoming message
+diff --git a/server/scripts/backpressure-demo.mjs b/server/scripts/backpressure-demo.mjs
+index 1684759..720637e 100644
+--- a/server/scripts/backpressure-demo.mjs
++++ b/server/scripts/backpressure-demo.mjs
+@@ -83,13 +83,14 @@ function slowDownload(path, mbps) {
+ async function measure(label, path) {
+   const samples = [];
+   const t0 = performance.now();
+-  const timer = setInterval(async () => {
++  const sample = async () => {
+     try {
+       samples.push([(performance.now() - t0) / 1000, (await getJson("/health")).rss / 1024 / 1024]);
+     } catch {
+       // sampling is best effort
+     }
+-  }, 200);
++  };
++  const timer = setInterval(() => void sample(), 200);
+   const bytes = await slowDownload(path, clientMBps);
+   await sleep(600);
+   clearInterval(timer);
+diff --git a/server/src/app.js b/server/src/app.js
+index eb2e194..5e4e5e9 100644
+--- a/server/src/app.js
++++ b/server/src/app.js
+@@ -1,4 +1,5 @@
+ import http from "node:http";
++import { BotManager } from "./bot.js";
+ import { createHttpHandler } from "./http.js";
+ import { startMatchLog } from "./log/matchlog.js";
+ import { CLOSE } from "./protocol.js";
+@@ -39,24 +40,31 @@ export function createApp(config, { log = console } = {}) {
+       onError: (err) => log.error("[matchlog]", err),
+     });
+     pending.add(done);
+-    done.finally(() => pending.delete(done));
++    void done.finally(() => pending.delete(done)); // `done` never rejects (see startMatchLog)
+   });
+ 
+   const server = http.createServer();
+   const wss = attachWebSocket({ server, rooms, config, log });
+-  server.on(
+-    "request",
+-    createHttpHandler({
+-      config,
+-      rooms,
+-      getStats: () => ({ connections: wss.clients.size }),
+-      getMatches: () =>
+-        rooms
+-          .list()
+-          .filter((r) => r.match?.running)
+-          .map((r) => r.match.stats()),
+-    }),
+-  );
++  const bots = new BotManager({ log });
++  const handleRequest = createHttpHandler({
++    config,
++    rooms,
++    bots,
++    getStats: () => ({ connections: wss.clients.size }),
++    getMatches: () =>
++      rooms
++        .list()
++        .filter((r) => r.match?.running)
++        .map((r) => r.match.stats()),
++  });
++  server.on("request", (req, res) => {
++    // The handler answers its own errors; this is the last safety net, so that a failure while
++    // sending an error reply drops that one connection instead of crashing the whole server.
++    handleRequest(req, res).catch((err) => {
++      log.error("[http] request handler failed:", err);
++      res.destroy();
++    });
++  });
+ 
+   for (const { id, ...opts } of DEFAULT_ROOMS) rooms.create(id, { ...opts, persistent: true });
+ 
+diff --git a/server/src/bot.js b/server/src/bot.js
+new file mode 100644
+index 0000000..8a14acd
+--- /dev/null
++++ b/server/src/bot.js
+@@ -0,0 +1,232 @@
++// Server-side AI players (Lab 07, M4).
++//
++// A Bot is a *player*, exactly like a WebSocket client: the Match hands it every snapshot through
++// player.send(), and it answers with ONE input per snapshot through match.receiveInput(). The input
++// takes the same road as a human's 12 bytes (codec.encodeInput -> codec.decodeInput), so the Match
++// cannot tell a bot from a person, and the bots exercise the real code path (queue, ack, prediction
++// inputs, snapshot encoding) instead of poking at the World.
++//
++//   decide(snapshot, slot, options)   pure: what the bot wants to do this tick
++//   class Bot                         a player that listens and answers
++//   class BotManager                  adds / removes bots per room (used by POST /api/rooms/:id/bots)
++//
++// The bot's thinking runs in setImmediate, not inside Match.tick(): the tick's own timing
++// (/api/stats tickMs) then measures the simulation, not the bots. The bots still run in this process,
++// so they cost event-loop time like any other work; for a clean capacity number use the load test.
++import { getCodec } from "@dogfight/shared/codec/index.js";
++import { NO_SLOT, WORLD_SIZE } from "@dogfight/shared/protocol.js";
++import { RoomFullError, newPlayerId } from "./rooms.js";
++
++const TAU = Math.PI * 2;
++const wrapAngle = (a) => ((((a + Math.PI) % TAU) + TAU) % TAU) - Math.PI;
++/** Shortest signed distance on a wrap-around axis. */
++const wrapDelta = (d, size) => (Math.abs(d) > size / 2 ? d - Math.sign(d) * size : d);
++const clamp1 = (x) => Math.max(-1, Math.min(1, x));
++const SHIP_RADIUS = 12;
++
++export const IDLE = Object.freeze({ thrust: false, turn: 0, fire: false });
++
++export const DEFAULT_BRAIN = Object.freeze({
++  fireArc: 0.12, // rad: shoot when the target is this close to dead ahead
++  fireRange: 450, // px
++  standOff: 140, // px: stop thrusting this close to a target (no ramming)
++  dangerMargin: 70, // px of clearance from an asteroid's edge that starts an evasion
++});
++
++/**
++ * What a bot wants to do this tick. Pure: the same snapshot, slot and options always give the same
++ * command, which is what makes bots testable. `phase` only shapes the wandering path.
++ *
++ * Priorities: 1. dodge an asteroid that is close; 2. chase and shoot the nearest other ship;
++ * 3. shoot a nearby asteroid for points; 4. wander.
++ * `snap` is a decoded snapshot: { tick, self, entities } (self is null while the bot is dead).
++ */
++export function decide(snap, slot, { phase = 0, ...brain } = {}) {
++  const { fireArc, fireRange, standOff, dangerMargin } = { ...DEFAULT_BRAIN, ...brain };
++  const me = snap.self;
++  if (!me) return IDLE; // dead: the world respawns us after a couple of seconds
++
++  const { w, h } = WORLD_SIZE;
++  let shipD = Infinity;
++  let shipDx = 0;
++  let shipDy = 0;
++  let rockGap = Infinity; // distance between the two edges, not the centres
++  let rockDx = 0;
++  let rockDy = 0;
++  for (const e of snap.entities) {
++    if (e.kind === "ship") {
++      if (e.slot === slot) continue; // that is us
++      const dx = wrapDelta(e.x - me.x, w);
++      const dy = wrapDelta(e.y - me.y, h);
++      const d = Math.hypot(dx, dy);
++      if (d < shipD) [shipD, shipDx, shipDy] = [d, dx, dy];
++    } else if (e.kind === "asteroid") {
++      const dx = wrapDelta(e.x - me.x, w);
++      const dy = wrapDelta(e.y - me.y, h);
++      const gap = Math.hypot(dx, dy) - e.radius - SHIP_RADIUS;
++      if (gap < rockGap) [rockGap, rockDx, rockDy] = [gap, dx, dy];
++    }
++  }
++
++  /** Turn towards (dx, dy); returns the angle error so callers can decide about thrust and fire. */
++  const aim = (dx, dy) => wrapAngle(Math.atan2(dy, dx) - me.angle);
++  // Proportional turn: a gain of 3 closes a 0.1 rad error without overshooting (one tick turns at most 0.117 rad).
++  const steer = (err) => clamp1(err * 3);
++
++  if (rockGap < dangerMargin) {
++    const err = aim(-rockDx, -rockDy); // face directly away from the rock
++    return { thrust: Math.abs(err) < 0.7, turn: steer(err), fire: false };
++  }
++
++  if (shipD < Infinity) {
++    const err = aim(shipDx, shipDy);
++    return {
++      thrust: Math.abs(err) < 0.9 && shipD > standOff,
++      turn: steer(err),
++      fire: Math.abs(err) < fireArc && shipD < fireRange,
++    };
++  }
++
++  if (rockGap < fireRange) {
++    const err = aim(rockDx, rockDy);
++    return { thrust: false, turn: steer(err), fire: Math.abs(err) < fireArc };
++  }
++
++  // Nobody in sight: drift along a slow sine-shaped turn, different for every bot.
++  return { thrust: true, turn: Math.sin(snap.tick * 0.05 + phase) * 0.6, fire: false };
++}
++
++const wireBytes = (data) => (typeof data === "string" ? Buffer.byteLength(data) : data.byteLength);
++
++/** A player that plays by itself. It has the same shape as the player object ws.js builds for a socket. */
++export class Bot {
++  isBot = true;
++  bytesIn = 0;
++  bytesOut = 0;
++  slot = NO_SLOT;
++
++  #codec;
++  #phase;
++  #brain;
++  #defer;
++  #onError;
++  #match = null;
++  #room = null;
++  #closed = false;
++  #scheduled = false;
++  #latest = null;
++  #seq = 0;
++
++  constructor({
++    name,
++    codec = "binary",
++    rng = Math.random,
++    defer = setImmediate,
++    brain = {},
++    onError = (err) => console.error("[bot]", err),
++  }) {
++    this.id = newPlayerId();
++    this.name = name;
++    this.codec = codec; // the name; the match looks it up to encode this bot's snapshots
++    this.#codec = getCodec(codec);
++    this.#phase = rng() * TAU;
++    this.#brain = brain;
++    this.#defer = defer;
++    this.#onError = onError;
++  }
++
++  /** Same order as a human join in ws.js: the match first (that assigns the slot), then the room. */
++  join(room) {
++    if (room.size >= room.maxPlayers) throw new RoomFullError(room);
++    if (!room.match) throw new Error(`room ${room.id} has no match`);
++    this.#match = room.match;
++    this.#room = room;
++    this.slot = room.match.addPlayer(this);
++    room.once("closed", () => (this.#closed = true)); // nothing to answer once the room is gone
++    room.join(this);
++  }
++
++  leave() {
++    if (this.#closed) return;
++    this.#closed = true;
++    this.#room?.leave(this); // emits "leave": the match drops our ship, the roster updates
++  }
++
++  /** What `send` is for a human socket: everything the server says to this player lands here. */
++  send(data, { game = false } = {}) {
++    if (!game || this.#closed) return; // roster / chat / joined: nothing a bot needs
++    this.bytesOut += wireBytes(data);
++    this.#latest = data; // if two arrive before we think, answer only the newest
++    if (this.#scheduled) return;
++    this.#scheduled = true;
++    this.#defer(this.#think);
++  }
++
++  #think = () => {
++    this.#scheduled = false;
++    if (this.#closed || this.#latest === null) return;
++    try {
++      const snap = this.#codec.decodeSnapshot(this.#latest);
++      const want = decide(snap, this.slot, { ...this.#brain, phase: this.#phase });
++      const wire = this.#codec.encodeInput({ seq: ++this.#seq, tick: snap.tick, ...want });
++      this.bytesIn += wireBytes(wire);
++      this.#match.receiveInput(this.id, this.#codec.decodeInput(wire));
++    } catch (err) {
++      // A bug in a bot must never take the server down: report it and take the bot out of the room.
++      this.#onError(err);
++      this.leave();
++    }
++  };
++}
++
++/** Adds and removes the bots of each room. */
++export class BotManager {
++  #byRoom = new Map(); // room.id -> Set<Bot>
++  #count = 0;
++
++  constructor({ rng = Math.random, defer, log = console, codec = "binary", brain = {} } = {}) {
++    this.options = { rng, defer, codec, brain };
++    this.log = log;
++  }
++
++  count(room) {
++    return this.#byRoom.get(room.id)?.size ?? 0;
++  }
++
++  /** Adds `n` bots, or throws RoomFullError and adds none. */
++  add(room, n) {
++    if (room.size + n > room.maxPlayers) throw new RoomFullError(room);
++    const bots = this.#byRoom.get(room.id) ?? new Set();
++    if (!this.#byRoom.has(room.id)) {
++      this.#byRoom.set(room.id, bots);
++      room.once("closed", () => this.#byRoom.delete(room.id));
++    }
++    const added = [];
++    try {
++      for (let i = 0; i < n; i++) {
++        const bot = new Bot({
++          ...this.options,
++          name: `Bot ${++this.#count}`,
++          onError: (err) => this.log.error("[bot]", err),
++        });
++        bot.join(room);
++        bots.add(bot);
++        added.push(bot);
++      }
++    } catch (err) {
++      for (const bot of added) (bot.leave(), bots.delete(bot)); // all or nothing
++      throw err;
++    }
++    return added;
++  }
++
++  /** Takes every bot out of the room; returns how many left. */
++  removeAll(room) {
++    const bots = this.#byRoom.get(room.id);
++    if (!bots) return 0;
++    const n = bots.size;
++    for (const bot of bots) bot.leave();
++    bots.clear();
++    return n;
++  }
++}
+diff --git a/server/src/config.js b/server/src/config.js
+index 932191f..5abf482 100644
+--- a/server/src/config.js
++++ b/server/src/config.js
+@@ -45,6 +45,9 @@ const SCHEMA = {
+   inputBurst: int("INPUT_BURST", 30, { min: 1 }), // game inputs have their own bucket: ~30 per second are normal
+   inputPerSec: int("INPUT_PER_SEC", 40, { min: 1 }),
+ 
++  // server-side AI players (Lab 07): POST/DELETE /api/rooms/:id/bots. BOTS=0 turns the endpoint off.
++  bots: (env) => env.BOTS !== "0",
++
+   // latency injector (Lab 05): added to both directions of every socket; clients can change it live
+   netsim: (env) => env.NETSIM !== "0",
+   netsimRttMs: int("NETSIM_RTT_MS", 0, { max: 2000 }),
+diff --git a/server/src/http.js b/server/src/http.js
+index 66fae22..6a6b923 100644
+--- a/server/src/http.js
++++ b/server/src/http.js
+@@ -98,7 +98,7 @@ function parseNewRoom(body, config) {
+   return out;
+ }
+ 
+-export function createHttpHandler({ config, rooms, getStats, getMatches = () => [] }) {
++export function createHttpHandler({ config, rooms, bots = null, getStats, getMatches = () => [] }) {
+   async function route(req, res, url) {
+     const { pathname } = url;
+ 
+@@ -138,6 +138,34 @@ export function createHttpHandler({ config, rooms, getStats, getMatches = () =>
+       throw new HttpError(405, "method not allowed");
+     }
+ 
++    // ---- server-side AI players (Lab 07); BOTS=0 removes the endpoint ----
++    const botRoute = bots && config.bots ? /^\/api\/rooms\/([^/]+)\/bots$/.exec(pathname) : null;
++    if (botRoute) {
++      const room = rooms.get(botRoute[1]);
++      if (!room) throw new HttpError(404, "no such room");
++      if (req.method === "POST") {
++        const body = await readJson(req, config.maxBodyBytes);
++        if (typeof body !== "object" || body === null || Array.isArray(body))
++          throw new HttpError(422, "body must be an object");
++        const count = body.count === undefined ? 1 : body.count; // only a MISSING count defaults to one
++        if (!Number.isInteger(count) || count < 1 || count > config.maxPlayersPerRoom)
++          throw new HttpError(422, `count must be an integer in 1..${config.maxPlayersPerRoom}`);
++        const free = room.maxPlayers - room.size;
++        if (count > free) throw new HttpError(409, `room has ${free} free slots`);
++        const added = bots.add(room, count);
++        return sendJson(res, 201, {
++          added: added.map(({ id, name, slot }) => ({ id, name, slot })),
++          bots: bots.count(room),
++        });
++      }
++      if (req.method === "DELETE") {
++        const removed = bots.removeAll(room);
++        return sendJson(res, 200, { removed, bots: 0 });
++      }
++      res.setHeader("Allow", "POST, DELETE");
++      throw new HttpError(405, "method not allowed");
++    }
++
+     if (pathname === "/api/replays" && req.method === "GET") {
+       return sendJson(res, 200, await listReplays(config.logDir));
+     }
+diff --git a/server/src/index.js b/server/src/index.js
+index 1339039..616b5dc 100644
+--- a/server/src/index.js
++++ b/server/src/index.js
+@@ -20,18 +20,18 @@ console.log(
+ if (config.demo) console.warn("DEMO_ENDPOINTS is on: /api/slow blocks the event loop on purpose");
+ 
+ let stopping = false;
+-for (const signal of ["SIGINT", "SIGTERM"]) {
+-  process.on(signal, async () => {
+-    if (stopping) return;
+-    stopping = true;
+-    console.log(`${signal}: shutting down...`);
+-    try {
+-      await app.close();
+-      console.log("bye");
+-      process.exit(0);
+-    } catch (err) {
+-      console.error("shutdown failed:", err);
+-      process.exit(1);
+-    }
+-  });
++async function shutdown(signal) {
++  if (stopping) return;
++  stopping = true;
++  console.log(`${signal}: shutting down...`);
++  try {
++    await app.close();
++    console.log("bye");
++    process.exit(0);
++  } catch (err) {
++    console.error("shutdown failed:", err);
++    process.exit(1);
++  }
+ }
++// A signal listener cannot wait for a promise; shutdown() handles every failure itself and exits.
++for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => void shutdown(signal));
+diff --git a/server/test/bot.test.js b/server/test/bot.test.js
+new file mode 100644
+index 0000000..54502b9
+--- /dev/null
++++ b/server/test/bot.test.js
+@@ -0,0 +1,420 @@
++import { afterEach, test } from "vitest";
++import assert from "node:assert/strict";
++import fc from "fast-check";
++import { codecs } from "@dogfight/shared/codec/index.js";
++import { mulberry32 } from "@dogfight/shared/prng.js";
++import { WORLD_SIZE } from "@dogfight/shared/protocol.js";
++import { Bot, BotManager, DEFAULT_BRAIN, IDLE, decide } from "../src/bot.js";
++import { Match } from "../src/match.js";
++import { RoomFullError, RoomManager } from "../src/rooms.js";
++
++// ---- the brain: decide() is a pure function of (snapshot, slot) -----------------------------------
++
++const me = (x, y, angle = 0) => ({
++  x,
++  y,
++  vx: 0,
++  vy: 0,
++  angle,
++  cooldown: 0,
++  rapid: 0,
++  homingAmmo: 0,
++  shield: 0,
++  invuln: 0,
++  thrust: false,
++  hp: 100,
++});
++const ship = (slot, x, y) => ({
++  kind: "ship",
++  id: slot,
++  slot,
++  x,
++  y,
++  angle: 0,
++  hp: 100,
++  thrust: false,
++  shield: false,
++  invuln: false,
++});
++const rock = (x, y, radius = 28) => ({
++  kind: "asteroid",
++  id: 100,
++  x,
++  y,
++  angle: 0,
++  radius,
++  hunter: false,
++});
++const snap = (self, entities = [], tick = 0) => ({ tick, ack: 0, self, entities, events: [] });
++const SLOT = 0; // the bot under test is slot 0; enemies are slot 1
++const near = (a, b, eps = 1e-9) => Math.abs(a - b) < eps;
++
++test("a dead bot does nothing (the world respawns it)", () => {
++  assert.deepEqual(decide(snap(null, [ship(1, 300, 300)]), SLOT), IDLE);
++});
++
++test("an enemy dead ahead and in range: fire, no turn, close in", () => {
++  const c = decide(snap(me(100, 360), [ship(1, 400, 360)]), SLOT);
++  assert.equal(c.fire, true);
++  assert.ok(near(c.turn, 0), `turn ${c.turn}`);
++  assert.equal(c.thrust, true);
++});
++
++test("an enemy beside the bot: turn towards it, do not fire yet, do not thrust sideways", () => {
++  // angle 0 points right (+x); +y is down on screen, so an enemy below needs a positive turn
++  const below = decide(snap(me(100, 100), [ship(1, 100, 300)]), SLOT);
++  assert.equal(below.turn, 1);
++  assert.equal(below.fire, false);
++  assert.equal(below.thrust, false);
++  const above = decide(snap(me(100, 500), [ship(1, 100, 300)]), SLOT);
++  assert.equal(above.turn, -1);
++});
++
++test("a small aiming error gives a small, proportional turn (no bang-bang)", () => {
++  const c = decide(snap(me(100, 360), [ship(1, 400, 380)]), SLOT); // about 0.067 rad off
++  assert.ok(c.turn > 0 && c.turn < 0.5, `turn ${c.turn}`);
++});
++
++test("an enemy out of range is chased but not shot at; one too close is shot at but not rammed", () => {
++  // 500 px away: beyond the 450 px fire range, and nearer than going the other way round the arena
++  const far = decide(snap(me(100, 360), [ship(1, 600, 360)]), SLOT);
++  assert.deepEqual([far.thrust, far.fire], [true, false]);
++  const close = decide(snap(me(100, 360), [ship(1, 200, 360)]), SLOT);
++  assert.deepEqual([close.thrust, close.fire], [false, true]);
++});
++
++test("it goes for the NEAREST enemy", () => {
++  const c = decide(snap(me(100, 360), [ship(2, 100, 700), ship(1, 400, 360)]), SLOT);
++  assert.equal(c.fire, true); // slot 1 is dead ahead and nearest; slot 2 is far below
++});
++
++test("the arena wraps: an enemy across the seam is reached the short way", () => {
++  // Enemy at x = 1250, bot at x = 10: 40 px to the LEFT (through the wall), not 1240 px to the right.
++  const c = decide(snap(me(10, 360), [ship(1, 1250, 300)]), SLOT);
++  assert.equal(c.turn, -1); // a bot that ignored the wrap would turn by only about -0.14
++  assert.equal(c.thrust, false);
++  // and facing left it shoots at the enemy that is 30 px away through the wall
++  const shoots = decide(snap(me(10, 360, Math.PI), [ship(1, 1260, 360)]), SLOT);
++  assert.equal(shoots.fire, true);
++});
++
++test("it never targets itself, bullets or pickups", () => {
++  const entities = [
++    ship(SLOT, 300, 360), // our own ship is in the snapshot
++    { kind: "bullet", id: 7, slot: 1, seq: 1, homing: false, x: 250, y: 360, angle: 0 },
++    { kind: "pickup", id: 8, effect: "shield", x: 200, y: 360, angle: 0 },
++  ];
++  const c = decide(snap(me(100, 360), entities), SLOT);
++  assert.equal(c.fire, false);
++});
++
++test("a close asteroid is dodged: face away, no thrust into it, no shooting", () => {
++  // asteroid centre 100 px ahead: edge-to-edge gap = 100 - 28 - 12 = 60 px, inside the 70 px margin
++  const facing = decide(snap(me(100, 360), [rock(200, 360)]), SLOT);
++  assert.equal(Math.abs(facing.turn), 1);
++  assert.equal(facing.thrust, false);
++  assert.equal(facing.fire, false);
++  const leaving = decide(snap(me(100, 360, Math.PI), [rock(200, 360)]), SLOT);
++  assert.equal(leaving.thrust, true); // already pointing away: get out of there
++});
++
++test("dodging beats shooting: with an enemy dead ahead behind an asteroid, it does not fire", () => {
++  const c = decide(snap(me(100, 360), [rock(200, 360), ship(1, 400, 360)]), SLOT);
++  assert.equal(c.fire, false);
++});
++
++test("with no enemy in sight it shoots a nearby asteroid, but does not fly into it", () => {
++  const c = decide(snap(me(100, 360), [rock(400, 360)]), SLOT);
++  assert.equal(c.fire, true);
++  assert.equal(c.thrust, false);
++});
++
++test("with nothing around it wanders, differently for every bot", () => {
++  const a = decide(snap(me(100, 100), [], 10), SLOT, { phase: 0.5 });
++  const b = decide(snap(me(100, 100), [], 10), SLOT, { phase: 2 });
++  for (const c of [a, b]) {
++    assert.equal(c.thrust, true);
++    assert.equal(c.fire, false);
++    assert.ok(Math.abs(c.turn) <= 0.6);
++  }
++  assert.notEqual(a.turn, b.turn);
++});
++
++test("the brain is tunable: a wide fire arc shoots at an enemy that is not quite dead ahead", () => {
++  const s = snap(me(100, 360), [ship(1, 400, 480)]); // about 0.38 rad off
++  assert.equal(decide(s, SLOT).fire, false);
++  assert.equal(decide(s, SLOT, { fireArc: 0.5 }).fire, true);
++  assert.ok(DEFAULT_BRAIN.fireArc < 0.5);
++});
++
++test("it is pure: it does not touch the snapshot, and the same input gives the same answer", () => {
++  const deepFreeze = (o) => {
++    for (const v of Object.values(o)) if (typeof v === "object" && v !== null) deepFreeze(v);
++    return Object.freeze(o);
++  };
++  const s = deepFreeze(snap(me(100, 360), [ship(1, 400, 360), rock(600, 100)], 77));
++  assert.deepEqual(decide(s, SLOT, { phase: 1 }), decide(s, SLOT, { phase: 1 })); // would throw on a write
++});
++
++test("property: whatever it sees, the command is valid and survives the wire", () => {
++  const x = fc.double({ min: 0, max: WORLD_SIZE.w, maxExcluded: true, noNaN: true });
++  const y = fc.double({ min: 0, max: WORLD_SIZE.h, maxExcluded: true, noNaN: true });
++  const slot = fc.integer({ min: 0, max: 7 });
++  const entity = fc.oneof(
++    fc.record({
++      kind: fc.constant("ship"),
++      id: fc.nat(65535),
++      slot,
++      x,
++      y,
++      angle: fc.double({ noNaN: true, min: -4, max: 4 }),
++    }),
++    fc.record({
++      kind: fc.constant("asteroid"),
++      id: fc.nat(65535),
++      radius: fc.integer({ min: 0, max: 255 }),
++      x,
++      y,
++    }),
++    fc.record({ kind: fc.constant("bullet"), id: fc.nat(65535), slot, x, y }),
++    fc.record({ kind: fc.constant("pickup"), id: fc.nat(65535), x, y }),
++  );
++  const self = fc.option(
++    fc.record({ x, y, angle: fc.double({ min: -100, max: 100, noNaN: true }) }),
++    { nil: null },
++  );
++  fc.assert(
++    fc.property(
++      self,
++      fc.array(entity, { maxLength: 25 }),
++      slot,
++      fc.nat(2 ** 31),
++      fc.double({ min: 0, max: 7, noNaN: true }),
++      (s, entities, mySlot, tick, phase) => {
++        const c = decide({ tick, ack: 0, self: s, entities, events: [] }, mySlot, { phase });
++        if (typeof c.thrust !== "boolean" || typeof c.fire !== "boolean") return false;
++        if (!Number.isFinite(c.turn) || c.turn < -1 || c.turn > 1) return false;
++        // the binary decoder rejects turn = -128/127; a command that gets this far is always legal
++        const back = codecs.binary.decodeInput(codecs.binary.encodeInput({ seq: 1, tick, ...c }));
++        return (
++          back.thrust === c.thrust &&
++          back.fire === c.fire &&
++          Math.abs(back.turn - c.turn) <= 0.5 / 127 + 1e-12
++        );
++      },
++    ),
++    { numRuns: 300 },
++  );
++});
++
++// ---- a Bot inside a real Match (no sockets, no timers: we call match.tick() ourselves) -------------
++
++const quiet = { log() {}, warn() {}, error() {}, info() {} };
++const rooms = [];
++afterEach(() => {
++  for (const r of rooms.splice(0)) r.closeAll();
++});
++
++/** A room with a real Match. Its own 30 Hz timer is switched off once somebody joins; tests call tick(). */
++function arena({ maxPlayers = 8, asteroids = 0 } = {}) {
++  const manager = new RoomManager({
++    maxRooms: 5,
++    maxPlayersPerRoom: 8,
++    emptyRoomTtlMs: 60_000,
++    defaultArena: { asteroids, pickups: false },
++  });
++  rooms.push(manager);
++  manager.on("created", (room) => {
++    room.match = new Match({ room, log: quiet });
++  });
++  const room = manager.create("test", { maxPlayers, persistent: true });
++  return { manager, room, match: room.match };
++}
++const sync = (fn) => fn(); // think immediately instead of in setImmediate
++const newBot = (o = {}) => new Bot({ name: "Bot", rng: mulberry32(1), defer: sync, ...o });
++const join = (bot, room) => {
++  bot.join(room);
++  room.match.stop(); // no real timer: the test drives time
++};
++const ticks = (match, n) => {
++  for (let i = 0; i < n; i++) match.tick();
++};
++
++test("a bot joins like a player: it has a slot, a ship, a roster entry and a match entry", () => {
++  const { room, match } = arena();
++  const bot = newBot({ name: "Robo" });
++  join(bot, room);
++  assert.equal(room.size, 1);
++  assert.equal(bot.slot, 0);
++  assert.deepEqual(room.roster(), [{ id: bot.id, name: "Robo" }]);
++  assert.ok(match.entries.has(bot.id));
++  assert.equal(match.world.players.get(bot.id)?.ship.alive, true);
++});
++
++test("the match answers a bot like any client: one input per snapshot, all accepted and acknowledged", () => {
++  const { room, match } = arena();
++  const bot = newBot();
++  join(bot, room);
++  ticks(match, 60);
++  const entry = match.entries.get(bot.id);
++  // tick n consumes the input the bot made from snapshot n-1, so after 60 ticks the ack is 59
++  assert.equal(entry.ack, 59);
++  assert.equal(entry.dropped, 0);
++  assert.equal(entry.stale, 0);
++  assert.ok(bot.bytesOut > 60 * 14, "it was sent snapshots"); // header alone is 14 bytes
++  assert.equal(bot.bytesIn, 59 * 12 + 12, "and it sent one 12-byte binary input per snapshot");
++});
++
++test("the JSON codec works too (a bot can be told to speak it)", () => {
++  const { room, match } = arena();
++  const bot = newBot({ codec: "json" });
++  join(bot, room);
++  ticks(match, 30);
++  assert.equal(match.entries.get(bot.id).ack, 29);
++  assert.ok(bot.bytesOut > 0 && bot.bytesIn > 0);
++});
++
++test("two bots find each other and fight: they close in, fire, and never flood or confuse the server", () => {
++  const { room, match } = arena();
++  const a = newBot({ rng: mulberry32(1) });
++  const b = newBot({ rng: mulberry32(2) });
++  join(a, room);
++  join(b, room);
++  let fired = 0;
++  match.world.events.addEventListener("fired", () => fired++);
++  const at = (bot) => match.world.players.get(bot.id).ship.pos;
++  const start = [at(a), at(b)].map((p) => ({ x: p.x, y: p.y }));
++  let closest = Infinity;
++  for (let i = 0; i < 900; i++) {
++    match.tick();
++    const dx = Math.abs(at(a).x - at(b).x);
++    const dy = Math.abs(at(a).y - at(b).y);
++    closest = Math.min(
++      closest,
++      Math.hypot(Math.min(dx, WORLD_SIZE.w - dx), Math.min(dy, WORLD_SIZE.h - dy)),
++    );
++  }
++  assert.ok(closest < 300, `closest approach ${closest.toFixed(0)} px`);
++  assert.ok(fired > 0, "they shot at each other");
++  for (const [i, bot] of [a, b].entries()) {
++    const p = at(bot);
++    assert.ok(Math.hypot(p.x - start[i].x, p.y - start[i].y) > 20, "and they moved");
++    const entry = match.entries.get(bot.id);
++    assert.equal(entry.dropped, 0);
++    assert.equal(entry.stale, 0);
++  }
++});
++
++test("thinking happens after the tick, not inside it (so /api/stats tickMs measures the simulation)", async () => {
++  const { room, match } = arena();
++  const bot = newBot({ defer: setImmediate });
++  join(bot, room);
++  const entry = match.entries.get(bot.id);
++  match.tick();
++  assert.equal(entry.queue.length, 0, "no input yet: the bot has not had a turn");
++  await new Promise((r) => setImmediate(r));
++  assert.equal(entry.queue.length, 1, "it answered once the event loop got to it");
++});
++
++test("if two snapshots arrive before the bot thinks, it answers only the newest", async () => {
++  const { room, match } = arena();
++  const bot = newBot({ defer: setImmediate });
++  join(bot, room);
++  match.tick();
++  match.tick();
++  await new Promise((r) => setImmediate(r));
++  const entry = match.entries.get(bot.id);
++  assert.equal(entry.lastSeqIn, 1);
++  assert.equal(entry.queue.length, 1);
++});
++
++test("a bot ignores everything that is not a game snapshot (roster, chat, joined)", () => {
++  const { room } = arena();
++  let turns = 0;
++  const bot = newBot({ defer: () => turns++ });
++  join(bot, room);
++  bot.send('{"v":1,"type":"roster","room":"test","players":[]}', { critical: true });
++  bot.send('{"v":1,"type":"chat"}');
++  assert.equal(turns, 0);
++});
++
++test("leaving takes the ship out of the world and stops the bot for good", () => {
++  const { room, match } = arena();
++  const bot = newBot();
++  join(bot, room);
++  ticks(match, 5);
++  bot.leave();
++  assert.equal(room.size, 0);
++  assert.equal(match.entries.has(bot.id), false);
++  assert.equal(match.world.players.has(bot.id), false);
++  bot.leave(); // twice is fine
++  assert.doesNotThrow(() => ticks(match, 5));
++});
++
++test("a full room refuses a bot and leaves nothing behind", () => {
++  const { room, match } = arena({ maxPlayers: 1 });
++  join(newBot(), room);
++  const late = newBot();
++  assert.throws(() => late.join(room), RoomFullError);
++  assert.equal(match.entries.size, 1);
++  assert.equal(room.size, 1);
++});
++
++test("a bug in a bot is contained: it is reported, the bot leaves, the match keeps ticking", () => {
++  const { room, match } = arena();
++  const errors = [];
++  const brain = {
++    get fireArc() {
++      throw new Error("boom");
++    },
++  };
++  const bot = newBot({ brain, onError: (e) => errors.push(e.message) });
++  const other = newBot();
++  join(bot, room);
++  join(other, room);
++  assert.doesNotThrow(() => ticks(match, 5));
++  assert.deepEqual(errors, ["boom"]);
++  assert.equal(match.entries.has(bot.id), false, "the broken bot is gone");
++  assert.equal(match.entries.has(other.id), true, "the healthy one carries on");
++});
++
++// ---- BotManager -----------------------------------------------------------------------------------
++
++function manager(room) {
++  const m = new BotManager({ rng: mulberry32(7), defer: sync, log: quiet });
++  return { m, add: (n) => m.add(room, n).map((b) => (room.match.stop(), b)) };
++}
++
++test("BotManager adds bots with distinct names and slots, and removes them all again", () => {
++  const { room } = arena();
++  const { m, add } = manager(room);
++  const bots = add(3);
++  assert.equal(m.count(room), 3);
++  assert.equal(room.size, 3);
++  assert.equal(new Set(bots.map((b) => b.name)).size, 3);
++  assert.deepEqual(
++    bots.map((b) => b.slot),
++    [0, 1, 2],
++  );
++  assert.equal(m.removeAll(room), 3);
++  assert.equal(room.size, 0);
++  assert.equal(m.count(room), 0);
++  assert.equal(m.removeAll(room), 0);
++});
++
++test("BotManager is all-or-nothing: asking for more bots than there is room for adds none", () => {
++  const { room, match } = arena({ maxPlayers: 4 });
++  const { m, add } = manager(room);
++  add(2);
++  assert.throws(() => m.add(room, 3), RoomFullError);
++  assert.equal(room.size, 2);
++  assert.equal(match.entries.size, 2);
++});
++
++test("BotManager forgets a room that closes", () => {
++  const { manager: rm, room } = arena();
++  const { m, add } = manager(room);
++  add(2);
++  rm.delete(room.id);
++  assert.equal(m.count(room), 0);
++});
+diff --git a/server/test/bots-api.test.js b/server/test/bots-api.test.js
+new file mode 100644
+index 0000000..d8fb354
+--- /dev/null
++++ b/server/test/bots-api.test.js
+@@ -0,0 +1,148 @@
++import { afterAll, beforeAll, test } from "vitest";
++import assert from "node:assert/strict";
++import { codecs } from "@dogfight/shared/codec/index.js";
++import { joinRoom, sleep, startServer } from "./helpers.js";
++
++// The bots endpoint and bots as seen by a real WebSocket player: the server cannot tell them from people.
++
++let s;
++beforeAll(async () => (s = await startServer({ MAX_PLAYERS_PER_ROOM: "6" })));
++afterAll(() => s.close());
++
++const json = { "Content-Type": "application/json" };
++const send = (method, path, body, headers = json) =>
++  fetch(s.url + path, {
++    method,
++    headers,
++    body: body === undefined ? undefined : typeof body === "string" ? body : JSON.stringify(body),
++  });
++let n = 0;
++async function newRoom(extra = {}) {
++  const name = `bots-${++n}-${Date.now().toString(36)}`;
++  const res = await send("POST", "/api/rooms", { name, ...extra });
++  assert.equal(res.status, 201);
++  return (await res.json()).id;
++}
++const listRoom = async (id) =>
++  (await (await send("GET", "/api/rooms")).json()).find((r) => r.id === id);
++
++test("POST adds bots to a room: they take slots, count as players, and show in the lobby list", async () => {
++  const id = await newRoom();
++  const res = await send("POST", `/api/rooms/${id}/bots`, { count: 3 });
++  assert.equal(res.status, 201);
++  const body = await res.json();
++  assert.equal(body.bots, 3);
++  assert.deepEqual(
++    body.added.map((b) => b.slot),
++    [0, 1, 2],
++  );
++  assert.equal(new Set(body.added.map((b) => b.name)).size, 3);
++  assert.equal((await listRoom(id)).players, 3);
++  await send("DELETE", `/api/rooms/${id}/bots`);
++});
++
++test("without a count, one bot is added", async () => {
++  const id = await newRoom();
++  const body = await (await send("POST", `/api/rooms/${id}/bots`, {})).json();
++  assert.equal(body.added.length, 1);
++  await send("DELETE", `/api/rooms/${id}/bots`);
++});
++
++test("bad requests: unknown room 404, bad count 422, not enough space 409, no JSON 415, wrong method 405", async () => {
++  const id = await newRoom({ maxPlayers: 4 });
++  assert.equal((await send("POST", "/api/rooms/nope/bots", {})).status, 404);
++  for (const count of [0, -1, 1.5, "2", null, 7])
++    // 7 > MAX_PLAYERS_PER_ROOM (6)
++    assert.equal(
++      (await send("POST", `/api/rooms/${id}/bots`, { count })).status,
++      422,
++      String(count),
++    );
++  for (const body of ["5", "null", "[]", '"x"'])
++    // valid JSON, but not an object
++    assert.equal((await send("POST", `/api/rooms/${id}/bots`, body)).status, 422, body);
++  assert.equal((await send("POST", `/api/rooms/${id}/bots`, "{nope")).status, 400);
++  assert.equal((await send("POST", `/api/rooms/${id}/bots`, { count: 5 })).status, 409); // room holds 4
++  assert.equal(
++    (await send("POST", `/api/rooms/${id}/bots`, "{}", { "Content-Type": "text/plain" })).status,
++    415,
++  );
++  const get = await send("GET", `/api/rooms/${id}/bots`);
++  assert.equal(get.status, 405);
++  assert.equal(get.headers.get("allow"), "POST, DELETE");
++  assert.equal((await listRoom(id)).players, 0, "a refused request adds nothing");
++});
++
++test("DELETE removes the bots, and an empty non-persistent room then goes away", async () => {
++  const id = await newRoom();
++  await send("POST", `/api/rooms/${id}/bots`, { count: 2 });
++  const res = await send("DELETE", `/api/rooms/${id}/bots`);
++  assert.deepEqual(await res.json(), { removed: 2, bots: 0 });
++  assert.equal(await listRoom(id), undefined);
++  assert.equal((await send("DELETE", `/api/rooms/${id}/bots`)).status, 404);
++});
++
++test("BOTS=0 switches the endpoint off", async () => {
++  const off = await startServer({ BOTS: "0" });
++  try {
++    const res = await fetch(`${off.url}/api/rooms/open-space/bots`, {
++      method: "POST",
++      headers: json,
++      body: "{}",
++    });
++    assert.equal(res.status, 404);
++  } finally {
++    await off.close();
++  }
++});
++
++test("a human sees the bots: roster entries, their ships in the snapshots, and they move", async () => {
++  const id = await newRoom();
++  await send("POST", `/api/rooms/${id}/bots`, { count: 2 });
++  const human = await joinRoom(s.wsUrl, id, "Human");
++  try {
++    const roster = await human.waitFor((m) => m.type === "roster" && m.players.length === 3);
++    assert.equal(roster.players.filter((p) => p.name.startsWith("Bot")).length, 2);
++    // our own ship sends no input in this test, so it stays put: look only at the bots' slots
++    const mySlot = (await human.waitFor((m) => m.type === "joined")).you.slot;
++
++    const decode = (buf) => codecs.binary.decodeSnapshot(buf);
++    const shipsOf = (snap) => snap.entities.filter((e) => e.kind === "ship");
++    const until = async (pred, ms = 3000) => {
++      for (const t0 = Date.now(); Date.now() - t0 < ms; await sleep(20)) {
++        const hit = human.snapshots.map(decode).find(pred);
++        if (hit) return hit;
++      }
++      throw new Error("timed out waiting for a snapshot");
++    };
++    const first = await until((snap) => shipsOf(snap).length === 3);
++    await sleep(800);
++    const later = decode(human.snapshots.at(-1));
++    const botShips = shipsOf(first).filter((e) => e.slot !== mySlot);
++    assert.equal(botShips.length, 2);
++    let moved = 0;
++    for (const before of botShips) {
++      const after = shipsOf(later).find((e) => e.slot === before.slot);
++      if (!after) continue; // shot down and waiting to respawn
++      if (Math.hypot(after.x - before.x, after.y - before.y) > 5 || after.angle !== before.angle)
++        moved++;
++    }
++    assert.ok(moved >= 1, "the bots fly by themselves");
++  } finally {
++    human.close();
++    await send("DELETE", `/api/rooms/${id}/bots`);
++  }
++});
++
++test("when the last bot goes, the human is told through the roster", async () => {
++  const id = await newRoom();
++  await send("POST", `/api/rooms/${id}/bots`, { count: 2 });
++  const human = await joinRoom(s.wsUrl, id, "Human");
++  try {
++    await human.waitFor((m) => m.type === "roster" && m.players.length === 3);
++    await send("DELETE", `/api/rooms/${id}/bots`);
++    await human.waitFor((m) => m.type === "roster" && m.players.length === 1);
++  } finally {
++    human.close();
++  }
++});
+diff --git a/server/tsconfig.json b/server/tsconfig.json
+new file mode 100644
+index 0000000..3d38921
+--- /dev/null
++++ b/server/tsconfig.json
+@@ -0,0 +1,11 @@
++{
++  "extends": "../tsconfig.base.json",
++  "compilerOptions": {
++    // Plain JavaScript, so there is nothing to emit and nothing is type-checked (checkJs is off).
++    // The project exists so typescript-eslint can read types for the promise rules (no-floating-promises).
++    "allowJs": true,
++    "checkJs": false,
++    "types": ["node"]
++  },
++  "include": ["src", "test", "scripts"]
++}
+diff --git a/shared/src/codec/binary.ts b/shared/src/codec/binary.ts
+index e69cb2d..1156059 100644
+--- a/shared/src/codec/binary.ts
++++ b/shared/src/codec/binary.ts
+@@ -163,7 +163,7 @@ export function encodeSnapshot(snap: Snapshot): Uint8Array {
+     v.setUint16(o, e.id, LE);
+     v.setUint8(o + 2, KIND[e.kind]);
+     let flags = 0;
+-    let p1 = 0;
++    let p1: number; // set in every case below (the default case returns)
+     let p2 = 0;
+     let p3 = 0;
+     switch (e.kind) {
+diff --git a/shared/test/codec.test.ts b/shared/test/codec.test.ts
+index fea0a63..2eaaec9 100644
+--- a/shared/test/codec.test.ts
++++ b/shared/test/codec.test.ts
+@@ -226,7 +226,10 @@ test("decoders reject garbage with CodecError and never crash (untrusted input)"
+   // fuzz: random bytes must either decode or throw CodecError, nothing else
+   for (let i = 0; i < 2000; i++) {
+     const junk = Uint8Array.from({ length: Math.floor(rnd() * 80) }, () => Math.floor(rnd() * 256));
+-    for (const decode of [binary.decodeInput, binary.decodeSnapshot]) {
++    for (const decode of [
++      (data: Uint8Array) => binary.decodeInput(data),
++      (data: Uint8Array) => binary.decodeSnapshot(data),
++    ]) {
+       try {
+         decode(junk);
+       } catch (e) {
+diff --git a/shared/test/physics.test.ts b/shared/test/physics.test.ts
+index a4fecf5..c16ed37 100644
+--- a/shared/test/physics.test.ts
++++ b/shared/test/physics.test.ts
+@@ -113,7 +113,7 @@ describe("stepShipState (the one place a ship moves)", () => {
+     const a = createShipState(5, 5);
+     const b = createShipState(5, 5);
+     for (let i = 0; i < 500; i++) {
+-      const c = cmd({ thrust: i % 3 !== 0, turn: ((i % 3) - 1) as -1 | 0 | 1, fire: i % 7 === 0 });
++      const c = cmd({ thrust: i % 3 !== 0, turn: (i % 3) - 1, fire: i % 7 === 0 });
+       stepShipState(a, c, DT, 1280, 720);
+       stepShipState(b, c, DT, 1280, 720);
+     }
+diff --git a/shared/test/properties.test.ts b/shared/test/properties.test.ts
+new file mode 100644
+index 0000000..1ca336a
+--- /dev/null
++++ b/shared/test/properties.test.ts
+@@ -0,0 +1,374 @@
++import { describe, test } from "vitest";
++import fc from "fast-check";
++import { asSeq, asTick } from "../src/brand.ts";
++import { CodecError, codecs } from "../src/codec/index.ts";
++import { EFFECT_NAMES, PROTOCOL_VERSION, parseClientMessage } from "../src/protocol.ts";
++import type { Snapshot, SnapshotEntity } from "../src/protocol.ts";
++import { MAX_SPEED, createShipState, stepShipState } from "../src/sim/shipPhysics.ts";
++
++// Property-based tests (Lab 07): instead of a handful of examples, state a rule that must hold for
++// EVERY input and let fast-check try a hundred of them, shrinking any failure to a minimal case.
++// If a property fails, fast-check prints the shrunk counterexample and a seed to replay it.
++
++const { binary, json } = codecs;
++
++// ---- building blocks ---------------------------------------------------------------------------
++
++const u32 = fc.integer({ min: 0, max: 2 ** 32 - 1 });
++const u16 = fc.integer({ min: 0, max: 0xffff });
++const slot = fc.integer({ min: 0, max: 7 });
++const hp = fc.integer({ min: 0, max: 100 });
++const coord = fc.double({ min: -5000, max: 5000, noNaN: true });
++const angle = fc.double({ min: -Math.PI, max: Math.PI, noNaN: true });
++const turn = fc.double({ min: -1, max: 1, noNaN: true });
++
++const inputCommand = fc.record({
++  seq: u32,
++  tick: u32,
++  thrust: fc.boolean(),
++  fire: fc.boolean(),
++  turn,
++});
++
++const entityBase = { id: u16, x: coord, y: coord, angle };
++const entity: fc.Arbitrary<SnapshotEntity> = fc.oneof(
++  fc.record({
++    ...entityBase,
++    kind: fc.constant("ship" as const),
++    slot,
++    hp,
++    thrust: fc.boolean(),
++    shield: fc.boolean(),
++    invuln: fc.boolean(),
++  }),
++  fc.record({
++    ...entityBase,
++    kind: fc.constant("bullet" as const),
++    slot,
++    seq: u16,
++    homing: fc.boolean(),
++  }),
++  fc.record({
++    ...entityBase,
++    kind: fc.constant("asteroid" as const),
++    radius: fc.integer({ min: 0, max: 255 }),
++    hunter: fc.boolean(),
++  }),
++  fc.record({
++    ...entityBase,
++    kind: fc.constant("pickup" as const),
++    effect: fc.constantFrom(...EFFECT_NAMES),
++  }),
++);
++
++const selfState = fc.record({
++  x: coord,
++  y: coord,
++  vx: coord,
++  vy: coord,
++  angle: coord,
++  cooldown: coord,
++  rapid: coord,
++  homingAmmo: coord,
++  shield: coord,
++  invuln: coord,
++  thrust: fc.boolean(),
++  hp,
++});
++
++const snapshot: fc.Arbitrary<Snapshot> = fc
++  .record({
++    tick: u32,
++    ack: u32,
++    self: fc.option(selfState, { nil: null }),
++    entities: fc.array(entity, { maxLength: 12 }),
++    events: fc.array(
++      fc.record({
++        type: fc.constantFrom("fired" as const, "hit" as const, "exploded" as const),
++        slot,
++        x: coord,
++        y: coord,
++      }),
++      { maxLength: 6 },
++    ),
++  })
++  .map((s) => ({ ...s, tick: asTick(s.tick), ack: asSeq(s.ack) }));
++
++/** True if `fn` returned normally or threw a CodecError: the only two outcomes a decoder may have. */
++function returnsOrCodecError(fn: () => unknown): boolean {
++  try {
++    fn();
++    return true;
++  } catch (e) {
++    return e instanceof CodecError;
++  }
++}
++
++// ---- the codec ---------------------------------------------------------------------------------
++
++describe("binary codec", () => {
++  test("input: decode(encode(cmd)) keeps every field, and turn is off by at most 1/254", () => {
++    fc.assert(
++      fc.property(inputCommand, (c) => {
++        const back = binary.decodeInput(
++          binary.encodeInput({ ...c, seq: asSeq(c.seq), tick: asTick(c.tick) }),
++        );
++        return (
++          back.seq === c.seq &&
++          back.tick === c.tick &&
++          back.thrust === c.thrust &&
++          back.fire === c.fire &&
++          Math.abs(back.turn - c.turn) <= 0.5 / 127 + 1e-12
++        );
++      }),
++    );
++  });
++
++  test("input: always exactly 12 bytes, whatever the values", () => {
++    fc.assert(
++      fc.property(inputCommand, (c) => {
++        const bytes = binary.encodeInput({ ...c, seq: asSeq(c.seq), tick: asTick(c.tick) });
++        return bytes.length === 12;
++      }),
++    );
++  });
++
++  test("snapshot: length is 14 + 41 (if self) + 18 per entity + 10 per event, as the spec says", () => {
++    fc.assert(
++      fc.property(snapshot, (s) => {
++        const expected = 14 + (s.self ? 41 : 0) + 18 * s.entities.length + 10 * s.events.length;
++        return binary.encodeSnapshot(s).length === expected;
++      }),
++    );
++  });
++
++  test("snapshot: decoding gives back the same entities (ids and kinds) and events, in order", () => {
++    fc.assert(
++      fc.property(snapshot, (s) => {
++        const back = binary.decodeSnapshot(binary.encodeSnapshot(s));
++        return (
++          back.tick === s.tick &&
++          back.ack === s.ack &&
++          (back.self === null) === (s.self === null) &&
++          back.entities.map((e) => `${e.kind}:${e.id}`).join() ===
++            s.entities.map((e) => `${e.kind}:${e.id}`).join() &&
++          back.events.map((e) => e.type).join() === s.events.map((e) => e.type).join()
++        );
++      }),
++    );
++  });
++
++  test("garbage: random bytes only ever give a value or a CodecError, never another crash", () => {
++    fc.assert(
++      fc.property(fc.uint8Array({ maxLength: 200 }), (bytes) => {
++        return (
++          returnsOrCodecError(() => binary.decodeInput(bytes)) &&
++          returnsOrCodecError(() => binary.decodeSnapshot(bytes))
++        );
++      }),
++      { numRuns: 500 },
++    );
++  });
++
++  test("garbage: a VALID snapshot with flipped bytes or cut short is still safe to decode", () => {
++    // Random bytes almost never get past the header, so damage a good message to reach the deep checks.
++    const damage = fc.record({
++      flips: fc.array(fc.tuple(fc.nat(), fc.integer({ min: 0, max: 255 })), { maxLength: 6 }),
++      cut: fc.option(fc.nat(), { nil: null }),
++    });
++    fc.assert(
++      fc.property(snapshot, damage, (s, { flips, cut }) => {
++        let bytes = binary.encodeSnapshot(s);
++        for (const [at, value] of flips) bytes[at % bytes.length] = value;
++        if (cut !== null) bytes = bytes.slice(0, cut % (bytes.length + 1));
++        return returnsOrCodecError(() => binary.decodeSnapshot(bytes));
++      }),
++      { numRuns: 500 },
++    );
++  });
++});
++
++describe("JSON codec", () => {
++  test("input: exact round trip (no quantization)", () => {
++    fc.assert(
++      fc.property(inputCommand, (c) => {
++        const cmd = { ...c, seq: asSeq(c.seq), tick: asTick(c.tick) };
++        const back = json.decodeInput(json.encodeInput(cmd));
++        return (
++          JSON.stringify(back) === JSON.stringify(cmd) ||
++          (back.turn === c.turn && back.seq === c.seq)
++        );
++      }),
++    );
++  });
++
++  test("garbage: any text only ever gives a value or a CodecError", () => {
++    fc.assert(
++      fc.property(fc.oneof(fc.string(), fc.json()), (text) => {
++        return (
++          returnsOrCodecError(() => json.decodeInput(text)) &&
++          returnsOrCodecError(() => json.decodeSnapshot(text))
++        );
++      }),
++      { numRuns: 500 },
++    );
++  });
++});
++
++// ---- the simulation ----------------------------------------------------------------------------
++
++describe("ship physics", () => {
++  const W = 1280;
++  const H = 720;
++
++  test("a ship stays inside the arena and under MAX_SPEED over up to 1000 random steps", () => {
++    const command = fc.record({ thrust: fc.boolean(), turn, fire: fc.boolean() });
++    const inside = (max: number) => fc.double({ min: 0, max, maxExcluded: true, noNaN: true });
++    fc.assert(
++      fc.property(
++        inside(W),
++        inside(H),
++        fc.array(command, { minLength: 1, maxLength: 1000 }),
++        (x, y, commands) => {
++          const s = createShipState(x, y);
++          for (const c of commands) {
++            stepShipState(s, c, 1 / 30, W, H);
++            if (!(s.x >= 0 && s.x < W && s.y >= 0 && s.y < H)) return false;
++            if (Math.hypot(s.vx, s.vy) > MAX_SPEED + 1e-6) return false;
++          }
++          return true;
++        },
++      ),
++    );
++  });
++
++  test("stepping is deterministic: the same start and commands always end in the same state", () => {
++    const command = fc.record({ thrust: fc.boolean(), turn, fire: fc.boolean() });
++    fc.assert(
++      fc.property(fc.array(command, { maxLength: 300 }), (commands) => {
++        const a = createShipState(100, 100);
++        const b = createShipState(100, 100);
++        for (const c of commands) {
++          stepShipState(a, c, 1 / 30, W, H);
++          stepShipState(b, c, 1 / 30, W, H);
++        }
++        return JSON.stringify(a) === JSON.stringify(b);
++      }),
++    );
++  });
++});
++
++// ---- the message parser (the trust boundary) ---------------------------------------------------
++
++describe("parseClientMessage", () => {
++  const v = fc.constant(PROTOCOL_VERSION);
++  const word = (chars: string, min: number, max: number) =>
++    fc.string({ unit: fc.constantFrom(...chars), minLength: min, maxLength: max });
++  const alnum = "abcdefghijklmnopqrstuvwxyz0123456789";
++
++  const validInput = fc.record({
++    v,
++    type: fc.constant("input"),
++    seq: u32,
++    tick: u32,
++    thrust: fc.boolean(),
++    turn,
++    fire: fc.boolean(),
++  });
++  const validMessage = fc.oneof(
++    validInput,
++    fc.record({
++      v,
++      type: fc.constant("ping"),
++      t: fc.double({ noNaN: true, noDefaultInfinity: true }),
++    }),
++    fc.record({ v, type: fc.constant("chat"), text: word(alnum, 1, 280) }),
++    fc.record({ v, type: fc.constant("leave") }),
++    fc.record({
++      v,
++      type: fc.constant("join"),
++      room: word(alnum, 1, 24),
++      name: word(alnum, 1, 16),
++      codec: fc.constantFrom("json", "binary"),
++    }),
++    fc.record({
++      v,
++      type: fc.constant("netsim"),
++      rtt: fc.double({ min: 0, max: 2000, noNaN: true }),
++      jitter: fc.double({ min: 0, max: 1000, noNaN: true }),
++      drop: fc.double({ min: 0, max: 100, noNaN: true }),
++    }),
++  );
++
++  test("accepts every well-formed message (and keeps its type)", () => {
++    fc.assert(
++      fc.property(validMessage, (m) => {
++        const r = parseClientMessage(m);
++        return r.ok && r.value.type === m.type;
++      }),
++    );
++  });
++
++  test("rejects any other protocol version", () => {
++    fc.assert(
++      fc.property(
++        validMessage,
++        fc.integer().filter((n) => n !== PROTOCOL_VERSION),
++        (m, other) => {
++          return !parseClientMessage({ ...m, v: other }).ok;
++        },
++      ),
++    );
++  });
++
++  test("rejects an unknown message type", () => {
++    const known = new Set(["input", "ping", "chat", "leave", "join", "netsim"]);
++    fc.assert(
++      fc.property(
++        validMessage,
++        fc.string().filter((s) => !known.has(s)),
++        (m, type) => {
++          return !parseClientMessage({ ...m, type }).ok;
++        },
++      ),
++    );
++  });
++
++  test("rejects a message with a required field removed", () => {
++    fc.assert(
++      fc.property(validMessage, fc.nat(), (m, pick) => {
++        const keys = Object.keys(m).filter((k) => k !== "v" && k !== "type" && k !== "codec");
++        fc.pre(keys.length > 0); // `leave` has nothing to remove
++        const key = keys[pick % keys.length];
++        const { [key as string]: _removed, ...rest } = m as Record<string, unknown>;
++        void _removed;
++        return !parseClientMessage(rest).ok;
++      }),
++    );
++  });
++
++  test("rejects (does not clamp) an input whose turn is outside [-1, 1]", () => {
++    const outOfRange = fc.oneof(
++      fc.double({ min: 1.0001, max: 1e9, noNaN: true }),
++      fc.double({ min: -1e9, max: -1.0001, noNaN: true }),
++    );
++    fc.assert(
++      fc.property(validInput, outOfRange, (m, bad) => !parseClientMessage({ ...m, turn: bad }).ok),
++    );
++  });
++
++  test("rejects anything that is not a JSON object", () => {
++    fc.assert(
++      fc.property(
++        fc.oneof(
++          fc.constant(null),
++          fc.integer(),
++          fc.string(),
++          fc.boolean(),
++          fc.array(fc.anything()),
++        ),
++        (x) => !parseClientMessage(x).ok,
++      ),
++    );
++  });
++});
+diff --git a/tsconfig.json b/tsconfig.json
+new file mode 100644
+index 0000000..9a6dd34
+--- /dev/null
++++ b/tsconfig.json
+@@ -0,0 +1,19 @@
++{
++  "extends": "./tsconfig.base.json",
++  "compilerOptions": {
++    // Root-level files only (end-to-end tests, tool configs, scripts). Each package has its own tsconfig.
++    // Nothing is emitted; checkJs is off. This exists so typescript-eslint can read types for them.
++    "allowJs": true,
++    "checkJs": false,
++    "lib": ["ES2023", "DOM"],
++    "types": ["node"]
++  },
++  "include": [
++    "e2e",
++    "scripts",
++    "shared/scripts",
++    "playwright.config.ts",
++    "vitest.config.js",
++    "eslint.config.js"
++  ]
++}

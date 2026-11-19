@@ -45,6 +45,9 @@ const SCHEMA = {
   inputBurst: int("INPUT_BURST", 30, { min: 1 }), // game inputs have their own bucket: ~30 per second are normal
   inputPerSec: int("INPUT_PER_SEC", 40, { min: 1 }),
 
+  // server-side AI players (Lab 07): POST/DELETE /api/rooms/:id/bots. BOTS=0 turns the endpoint off.
+  bots: (env) => env.BOTS !== "0",
+
   // latency injector (Lab 05): added to both directions of every socket; clients can change it live
   netsim: (env) => env.NETSIM !== "0",
   netsimRttMs: int("NETSIM_RTT_MS", 0, { max: 2000 }),

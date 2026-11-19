@@ -26,8 +26,8 @@ export class Lobby extends EventTarget {
   enter() {
     if (this.#life) return;
     this.#life = new AbortController();
-    this.refresh();
-    this.#timer = setInterval(() => this.refresh(), this.#opts.intervalMs);
+    void this.refresh(); // refresh() reports failures as a "failed" event and never rejects
+    this.#timer = setInterval(() => void this.refresh(), this.#opts.intervalMs);
   }
 
   /** The player left: stop the timer and cancel any request still in flight. */

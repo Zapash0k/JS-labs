@@ -83,13 +83,14 @@ function slowDownload(path, mbps) {
 async function measure(label, path) {
   const samples = [];
   const t0 = performance.now();
-  const timer = setInterval(async () => {
+  const sample = async () => {
     try {
       samples.push([(performance.now() - t0) / 1000, (await getJson("/health")).rss / 1024 / 1024]);
     } catch {
       // sampling is best effort
     }
-  }, 200);
+  };
+  const timer = setInterval(() => void sample(), 200);
   const bytes = await slowDownload(path, clientMBps);
   await sleep(600);
   clearInterval(timer);

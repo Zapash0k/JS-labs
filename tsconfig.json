@@ -1,0 +1,19 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    // Root-level files only (end-to-end tests, tool configs, scripts). Each package has its own tsconfig.
+    // Nothing is emitted; checkJs is off. This exists so typescript-eslint can read types for them.
+    "allowJs": true,
+    "checkJs": false,
+    "lib": ["ES2023", "DOM"],
+    "types": ["node"]
+  },
+  "include": [
+    "e2e",
+    "scripts",
+    "shared/scripts",
+    "playwright.config.ts",
+    "vitest.config.js",
+    "eslint.config.js"
+  ]
+}

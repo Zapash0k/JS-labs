@@ -26,9 +26,10 @@ src/protocol.js     message types, close codes, validate()
 src/ws.js           connection lifecycle: join deadline, validation, rate limit, heartbeat, slow clients
 src/ratelimit.js    token bucket
 src/log/matchlog.js room events -> object-mode Transform -> NDJSON file (pipeline)
+src/bot.js           AI players: decide() brain, Bot (a player), BotManager (POST /api/rooms/:id/bots)
 src/log/replay.js   async generator over an NDJSON file; list of replays
 scripts/            backpressure-demo.mjs, block-demo.mjs, crash-demo.mjs (experiments below)
-test/               node:test suite
+test/               Vitest suite (bot.test.js, bots-api.test.js cover the bots)
 ```
 
 ## HTTP API
@@ -42,8 +43,36 @@ test/               node:test suite
 | `GET /api/replays/:id`  | the NDJSON file, **streamed** with `pipeline(createReadStream, res)`                                   |
 | anything else under `/` | static file from `client/dist` (`403` for traversal, `404`, `503` if the client is not built)          |
 
+| `POST /api/rooms/:id/bots` | body `{ count? }` (1 to `MAX_PLAYERS_PER_ROOM`, default 1) → 201 `{ added: [{ id, name, slot }], bots }`, 404/409/415/422 |
+| `DELETE /api/rooms/:id/bots` | removes every bot from the room → `{ removed, bots: 0 }` |
+
 Three rooms always exist (`open-space`, `rock-field`, `quiet-corner`). Rooms created by `POST` (or by a `join` to an
 unknown id) are deleted when they become empty, or after `EMPTY_ROOM_TTL_MS` if nobody ever joins.
+
+### Bots (Lab 07, M4)
+
+`src/bot.js`. A bot is a **player**, not a special case: the match sends it binary snapshots through `player.send()` and
+it answers with one input per snapshot through `match.receiveInput()`. The input goes through
+`codec.encodeInput` → `codec.decodeInput` like a human's 12 bytes, so the match cannot tell a bot from a person.
+
+- **Brain** (`decide(snapshot, slot, options)`, pure and unit-tested): dodge a close asteroid → chase and shoot the
+  nearest other ship → shoot a nearby asteroid → wander. It aims the short way round the wrap-around arena, and
+  turns proportionally (no jitter). `options` (`fireArc`, `fireRange`, `standOff`, `dangerMargin`) tune it; a wide
+  `fireArc` makes a bot spray bullets, which is what you want for a "heavy shooting" profiling session.
+- **Thinking runs in `setImmediate`**, not inside `Match.tick()`, so `tickMs` in `/api/stats` measures the simulation
+  and not the bots. The bots still run in this process and cost event-loop time; for a clean capacity number use the
+  load test (separate WebSocket clients), not bots.
+- **A bug in a bot cannot crash the server**: its error is logged and that bot leaves the room.
+- **Bots keep playing when the last human leaves.** That is on purpose (a bots-only room is how you profile the server
+  with `--cpu-prof`), so remove them with `DELETE /api/rooms/:id/bots`. A non-persistent room is deleted once its last
+  bot is gone.
+- `BOTS=0` removes the endpoint. A room holds `MAX_PLAYERS_PER_ROOM` players (default 8) **including bots**, so for
+  8 bots plus yourself start the server with `MAX_PLAYERS_PER_ROOM=9` or more.
+
+```bash
+curl -X POST localhost:3000/api/rooms/open-space/bots -H 'Content-Type: application/json' -d '{"count":4}'
+curl -X DELETE localhost:3000/api/rooms/open-space/bots
+```
 
 ## WebSocket protocol v1 (`/ws`)
 

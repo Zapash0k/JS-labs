@@ -163,7 +163,7 @@ export function encodeSnapshot(snap: Snapshot): Uint8Array {
     v.setUint16(o, e.id, LE);
     v.setUint8(o + 2, KIND[e.kind]);
     let flags = 0;
-    let p1 = 0;
+    let p1: number; // set in every case below (the default case returns)
     let p2 = 0;
     let p3 = 0;
     switch (e.kind) {

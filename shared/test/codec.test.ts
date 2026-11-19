@@ -1,4 +1,4 @@
-import { test } from "node:test";
+import { test } from "vitest";
 import assert from "node:assert/strict";
 import { asSeq, asTick } from "../src/brand.ts";
 import { mulberry32 } from "../src/prng.ts";
@@ -226,7 +226,10 @@ test("decoders reject garbage with CodecError and never crash (untrusted input)"
   // fuzz: random bytes must either decode or throw CodecError, nothing else
   for (let i = 0; i < 2000; i++) {
     const junk = Uint8Array.from({ length: Math.floor(rnd() * 80) }, () => Math.floor(rnd() * 256));
-    for (const decode of [binary.decodeInput, binary.decodeSnapshot]) {
+    for (const decode of [
+      (data: Uint8Array) => binary.decodeInput(data),
+      (data: Uint8Array) => binary.decodeSnapshot(data),
+    ]) {
       try {
         decode(junk);
       } catch (e) {
